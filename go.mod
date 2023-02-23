@@ -1,4 +1,4 @@
-module github.com/containers/prometheus-podman-exporter
+module github.com/yylyyl/prometheus-podman3-exporter
 
 go 1.17
 

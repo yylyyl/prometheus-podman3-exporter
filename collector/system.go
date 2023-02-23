@@ -1,9 +1,9 @@
 package collector
 
 import (
-	"github.com/containers/prometheus-podman-exporter/pdcs"
 	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/yylyyl/prometheus-podman3-exporter/pdcs"
 )
 
 type systemCollector struct {

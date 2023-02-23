@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/containers/prometheus-podman-exporter/collector"
-	"github.com/containers/prometheus-podman-exporter/pdcs"
 	"github.com/go-kit/log/level"
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	"github.com/spf13/cobra"
+	"github.com/yylyyl/prometheus-podman3-exporter/collector"
+	"github.com/yylyyl/prometheus-podman3-exporter/pdcs"
 )
 
 // Start starts prometheus exporter.

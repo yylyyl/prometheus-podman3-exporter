@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/containers/prometheus-podman-exporter/cmd"
+	"github.com/yylyyl/prometheus-podman3-exporter/cmd"
 )
 
 func main() {

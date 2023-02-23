@@ -5,9 +5,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/containers/prometheus-podman-exporter/exporter"
 	"github.com/prometheus/common/version"
 	"github.com/spf13/cobra"
+	"github.com/yylyyl/prometheus-podman3-exporter/exporter"
 )
 
 const (
