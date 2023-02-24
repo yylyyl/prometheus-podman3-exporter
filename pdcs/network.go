@@ -3,9 +3,10 @@ package pdcs
 import (
 	"strings"
 
-	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v3/cmd/podman/registry"
+	podnetwork "github.com/containers/podman/v3/libpod/network"
+	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v3/pkg/network"
 )
 
 // Network implements network's basic information.
@@ -18,7 +19,7 @@ type Network struct {
 }
 
 type listPrintReports struct {
-	types.Network
+	*entities.NetworkListReport
 }
 
 // Networks returns list of networks (Network).
@@ -31,11 +32,18 @@ func Networks() ([]Network, error) {
 	}
 
 	for _, rep := range reports {
+		// only two possible values in v3
+		driver := podnetwork.DefaultNetworkDriver
+		plugins := network.GetCNIPlugins(rep.NetworkConfigList)
+		if strings.Contains(plugins, podnetwork.MacVLANNetworkDriver) {
+			driver = podnetwork.MacVLANNetworkDriver
+		}
+
 		networks = append(networks, Network{
 			Name:             rep.Name,
-			ID:               getID(rep.ID),
-			Driver:           rep.Driver,
-			NetworkInterface: rep.NetworkInterface,
+			ID:               getID(network.GetNetworkID(rep.Name)),
+			Driver:           driver,
+			NetworkInterface: "", // not supported
 			Labels:           listPrintReports{rep}.labels(),
 		})
 	}
@@ -44,8 +52,8 @@ func Networks() ([]Network, error) {
 }
 
 func (n listPrintReports) labels() string {
-	list := make([]string, 0, len(n.Network.Labels))
-	for k, v := range n.Network.Labels {
+	list := make([]string, 0, len(n.Labels))
+	for k, v := range n.Labels {
 		list = append(list, k+"="+v)
 	}
 

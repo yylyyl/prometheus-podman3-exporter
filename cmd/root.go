@@ -22,8 +22,8 @@ var (
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
-	Use:   "prometheus-podman-exporter",
-	Short: "prometheus-podman-exporter",
+	Use:   "prometheus-podman3-exporter",
+	Short: "prometheus-podman3-exporter",
 	Long: `Prometheus exporter for podman exposing containers, pods, images,
 volumes and networks information.`,
 	PreRunE: preRun,

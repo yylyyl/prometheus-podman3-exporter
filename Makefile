@@ -1,4 +1,4 @@
-PKG_PATH = "github.com/containers/prometheus-podman-exporter"
+PKG_PATH = "github.com/yylyyl/prometheus-podman3-exporter"
 BIN := ./bin
 GO := go
 TARGET := prometheus-podman-exporter

@@ -3,8 +3,8 @@ package pdcs
 import (
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v3/cmd/podman/registry"
+	"github.com/containers/podman/v3/libpod/define"
 )
 
 // System implements podman system information.

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/cri-o/ocicni/pkg/ocicni"
 	"github.com/pkg/errors"
 )
 
@@ -32,14 +32,14 @@ const (
 )
 
 const (
-	containerHealthHealthy = 0 + iota
+	containerHealthHealthy   = 0 + iota
 	containerHealthUnhealthy = 0 + iota
-	containerHealthStarting = 0 + iota
+	containerHealthStarting  = 0 + iota
 )
 
 const (
 	stateUnknown  = -1
-	healthUnknown  = -1
+	healthUnknown = -1
 	noneReference = "<none>"
 	idLimit       = 12
 )
@@ -158,7 +158,7 @@ func RemoveScientificNotationFromFloat(x float64) (float64, error) {
 // portsToString converts the ports used to a string of the from "port1, port2"
 // and also groups a continuous list of ports into a readable format.
 // The format is IP:HostPort(-Range)->ContainerPort(-Range)/Proto.
-func portsToString(ports []types.PortMapping) string {
+func portsToString(ports []ocicni.PortMapping) string {
 	if len(ports) == 0 {
 		return ""
 	}
@@ -174,15 +174,9 @@ func portsToString(ports []types.PortMapping) string {
 		protocols := strings.Split(port.Protocol, ",")
 
 		for _, protocol := range protocols {
-			if port.Range > 1 {
-				fmt.Fprintf(sb, "%s:%d-%d->%d-%d/%s, ",
-					hostIP, port.HostPort, port.HostPort+port.Range-1,
-					port.ContainerPort, port.ContainerPort+port.Range-1, protocol)
-			} else {
-				fmt.Fprintf(sb, "%s:%d->%d/%s, ",
-					hostIP, port.HostPort,
-					port.ContainerPort, protocol)
-			}
+			fmt.Fprintf(sb, "%s:%d->%d/%s, ",
+				hostIP, port.HostPort,
+				port.ContainerPort, protocol)
 		}
 	}
 

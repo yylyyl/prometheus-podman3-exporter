@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v3/cmd/podman/registry"
+	"github.com/containers/podman/v3/pkg/domain/entities"
 )
 
 // Image implements image's basic information.
