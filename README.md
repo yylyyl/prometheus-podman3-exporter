@@ -1,14 +1,20 @@
-# prometheus-podman-exporter
+# prometheus-podman3-exporter
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/containers/prometheus-podman-exporter)](https://pkg.go.dev/github.com/containers/prometheus-podman-exporter)
-[![Go Report](https://img.shields.io/badge/go%20report-A%2B-brightgreen.svg)](https://goreportcard.com/report/github.com/containers/prometheus-podman-exporter)
-[![Build Status](https://api.cirrus-ci.com/github/containers/prometheus-podman-exporter.svg)](https://cirrus-ci.com/github/containers/prometheus-podman-exporter/master)
+Prometheus exporter for podman v3.x.
 
-Prometheus exporter for podman v4.x environment exposing containers, pods, images, volumes and networks information.
+Maybe you want to use official [prometheus-podman-exporter](https://github.com/containers/prometheus-podman-exporter),
+which supports podman v4.x only. However, many linux distributions come with podman v3.x now (February 2023).
+For example:
 
-prometheus-podman-exporter uses the podman v4.x (libpod) library to fetch the statistics and therefore no need to enable podman.socket service unless using the container image.
+- Debian bullseye: 3.0.1
+- Ubuntu kinetic: 3.4.4
+
+That's why the official exporter is forked.
+
+prometheus-podman3-exporter uses the podman v3.x (libpod) library to fetch the statistics and therefore no need to enable podman.socket service unless using the container image.
 
 - [**Installation**](#installation)
+- [**Limitation**](#limitation)
 - [**Usage and Options**](#usage-and-options)
 - [**Collectors**](#collectors)
 - [**License**](#license)
@@ -16,6 +22,10 @@ prometheus-podman-exporter uses the podman v4.x (libpod) library to fetch the st
 ## Installation
 
 Building from source, using container image or installing packaged versions are detailed in [install guide](install.md).
+
+## Limitation
+
+The code interacting with the network part of podman is slightly altered, and the interface name of a podman network is always empty.
 
 ## Usage and Options
 
@@ -48,7 +58,7 @@ By default only container collector is enabled, in order to enable all collector
 `Example:` enable all available collectors:
 
 ```shell
-$ ./bin/prometheus-podman-exporter --collector.enable-all
+$ ./bin/prometheus-podman3-exporter --collector.enable-all
 ```
 
 ## Collectors
@@ -283,10 +293,10 @@ podman_image_size{id="c4b778290339",repository="docker.io/grafana/grafana",tag="
 ```shell
 # HELP podman_network_info Network information.
 # TYPE podman_network_info gauge
-podman_network_info{driver="bridge",id="2f259bab93aa",interface="podman0",labels="",name="podman"} 1
-podman_network_info{driver="bridge",id="420272a98a4c",interface="podman3",labels="",name="network03"} 1
-podman_network_info{driver="bridge",id="6eb310d4b0bb",interface="podman2",labels="",name="network02"} 1
-podman_network_info{driver="bridge",id="a5a6391121a5",interface="podman1",labels="",name="network01"} 1
+podman_network_info{driver="bridge",id="2f259bab93aa",interface="",labels="",name="podman"} 1
+podman_network_info{driver="bridge",id="420272a98a4c",interface="",labels="",name="network03"} 1
+podman_network_info{driver="bridge",id="6eb310d4b0bb",interface="",labels="",name="network02"} 1
+podman_network_info{driver="bridge",id="a5a6391121a5",interface="",labels="",name="network01"} 1
 ```
 
 #### `volume`
