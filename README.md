@@ -6,32 +6,42 @@ Maybe you want to use official [prometheus-podman-exporter](https://github.com/c
 which supports podman v4.x only. However, many linux distributions come with podman v3.x now (February 2023).
 For example:
 
-- Debian bullseye: 3.0.1
-- Ubuntu kinetic: 3.4.4
+- Debian 11 (bullseye): (3.0.1)[https://packages.debian.org/bullseye/podman]
+- Ubuntu 22.10 (kinetic): (3.4.4)[https://packages.ubuntu.com/kinetic/podman]
+- Ubuntu 22.04 LTS (jammy): (3.4.4)[https://packages.ubuntu.com/jammy/podman]
 
 That's why the official exporter is forked.
 
 prometheus-podman3-exporter uses the podman v3.x (libpod) library to fetch the statistics and therefore no need to enable podman.socket service unless using the container image.
 
 - [**Installation**](#installation)
-- [**Limitation**](#limitation)
+- [**Limitation and Compatability**](#limitation-and-compatibility)
 - [**Usage and Options**](#usage-and-options)
 - [**Collectors**](#collectors)
 - [**License**](#license)
 
 ## Installation
 
-Building from source, using container image or installing packaged versions are detailed in [install guide](install.md).
+Building from source or using container image are detailed in [install guide](install.md).
 
-## Limitation
+## Limitation and Compatibility
 
-The code interacting with the network part of podman is slightly altered, and the interface name of a podman network is always empty.
+The code interacting with the network part of podman is slightly altered, and **the interface name of a podman network is always empty**.
+
+As compatibility problems would occur, the version of podman in your environment and the version of client library should match.
+
+Thus, if you want to connect to podman in `ABI mode`,
+switch to `api-3.0.0` branch for podman 3.0.x or 3.1.x, or switch to `main` branch for podman 3.2.x or above.
+
+If you want to connect to podman in `tunnel mode` (mostly because you want to run this project in podman, including using `unix socket` or `tcp`),
+it seems safe to use a client library of lower version. Switch to `api-3.0.0` branch.
+
 
 ## Usage and Options
 
 ```shell
 Usage:
-  prometheus-podman-exporter [flags]
+  prometheus-podman3-exporter [flags]
 
 Flags:
   -a, --collector.enable-all                  Enable all collectors by default.
@@ -45,7 +55,7 @@ Flags:
                                               to labels on prometheus metrics for each pod/container/image.
                                               collector.store_labels must be set to false for this to take effect.
   -d, --debug                                 Set log level to debug.
-  -h, --help                                  help for prometheus-podman-exporter
+  -h, --help                                  help for prometheus-podman3-exporter
       --version                               Print version and exit.
   -e, --web.disable-exporter-metrics          Exclude metrics about the exporter itself (promhttp_*, process_*, go_*).
   -l, --web.listen-address string             Address on which to expose metrics and web interface. (default ":9882")
