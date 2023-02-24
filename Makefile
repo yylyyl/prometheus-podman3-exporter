@@ -1,7 +1,7 @@
 PKG_PATH = "github.com/yylyyl/prometheus-podman3-exporter"
 BIN := ./bin
 GO := go
-TARGET := prometheus-podman-exporter
+TARGET := prometheus-podman3-exporter
 SRC = $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 PRE_COMMIT = $(shell command -v bin/venv/bin/pre-commit ~/.local/bin/pre-commit pre-commit | head -n1)
 PKG_MANAGER ?= $(shell command -v dnf yum|head -n1)
@@ -22,11 +22,11 @@ clean:
 	@rm -rf $(BIN)
 
 .PHONY: binary
-binary: $(TARGET)  ## Build prometheus-podman-exporter binary
+binary: $(TARGET)  ## Build prometheus-podman3-exporter binary
 	@true
 
 .PHONY: binary-remote
-binary-remote: ## Build prometheus-podman-exporter for remote connection
+binary-remote: ## Build prometheus-podman3-exporter for remote connection
 	@mkdir -p $(BIN)/remote
 	@export CGO_ENABLED=0 && $(GO) build $(BUILDFLAGS) --tags "remote containers_image_openpgp" -ldflags="-X '$(PKG_PATH)/cmd.buildVersion=$(VERSION)' -X '$(PKG_PATH)/cmd.buildRevision=$(REVISION)' -X '$(PKG_PATH)/cmd.buildBranch=$(BRANCH)'" -o $(BIN)/remote/$(TARGET)
 
