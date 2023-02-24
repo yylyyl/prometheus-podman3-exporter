@@ -153,7 +153,11 @@ func (ref dirReference) NewImageSource(ctx context.Context, sys *types.SystemCon
 // NewImageDestination returns a types.ImageDestination for this reference.
 // The caller must call .Close() on the returned ImageDestination.
 func (ref dirReference) NewImageDestination(ctx context.Context, sys *types.SystemContext) (types.ImageDestination, error) {
-	return newImageDestination(sys, ref)
+	compress := false
+	if sys != nil {
+		compress = sys.DirForceCompress
+	}
+	return newImageDestination(ref, compress)
 }
 
 // DeleteImage deletes the named image from the registry, if supported.

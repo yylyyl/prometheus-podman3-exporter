@@ -1,9 +1,6 @@
 package utils
 
-import (
-	"fmt"
-	"os"
-)
+import "fmt"
 
 type OutputErrors []error
 
@@ -13,7 +10,7 @@ func (o OutputErrors) PrintErrors() (lastError error) {
 	}
 	lastError = o[len(o)-1]
 	for e := 0; e < len(o)-1; e++ {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", o[e])
+		fmt.Println(o[e])
 	}
 	return
 }

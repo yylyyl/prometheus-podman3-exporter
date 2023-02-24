@@ -56,7 +56,7 @@ func (ic *ContainerEngine) VolumeInspect(ctx context.Context, namesOrIds []strin
 	for _, id := range namesOrIds {
 		data, err := volumes.Inspect(ic.ClientCtx, id, nil)
 		if err != nil {
-			errModel, ok := err.(*errorhandling.ErrorModel)
+			errModel, ok := err.(errorhandling.ErrorModel)
 			if !ok {
 				return nil, nil, err
 			}
@@ -90,10 +90,4 @@ func (ic *ContainerEngine) VolumeExists(ctx context.Context, nameOrID string) (*
 	return &entities.BoolReport{
 		Value: exists,
 	}, nil
-}
-
-// Volumemounted check if a given volume using plugin or filesystem is mounted or not.
-// TODO: Not used and exposed to tunnel. Will be used by `export` command which is unavailable to `podman-remote`
-func (ic *ContainerEngine) VolumeMounted(ctx context.Context, nameOrID string) (*entities.BoolReport, error) {
-	return nil, errors.New("not implemented")
 }

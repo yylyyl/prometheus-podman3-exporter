@@ -5,7 +5,6 @@ package lockfile
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,30 +33,11 @@ type lockfile struct {
 // descriptor.  Note that the path is opened read-only when ro is set.  If ro
 // is unset, openLock will open the path read-write and create the file if
 // necessary.
-func openLock(path string, ro bool) (fd int, err error) {
+func openLock(path string, ro bool) (int, error) {
 	if ro {
-		fd, err = unix.Open(path, os.O_RDONLY|unix.O_CLOEXEC|os.O_CREATE, 0)
-	} else {
-		fd, err = unix.Open(path,
-			os.O_RDWR|unix.O_CLOEXEC|os.O_CREATE,
-			unix.S_IRUSR|unix.S_IWUSR|unix.S_IRGRP|unix.S_IROTH,
-		)
+		return unix.Open(path, os.O_RDONLY|unix.O_CLOEXEC, 0)
 	}
-
-	if err == nil {
-		return
-	}
-
-	// the directory of the lockfile seems to be removed, try to create it
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return fd, errors.Wrap(err, "creating locker directory")
-		}
-
-		return openLock(path, ro)
-	}
-
-	return
+	return unix.Open(path, os.O_RDWR|unix.O_CLOEXEC|os.O_CREATE, unix.S_IRUSR|unix.S_IWUSR|unix.S_IRGRP|unix.S_IROTH)
 }
 
 // createLockerForPath returns a Locker object, possibly (depending on the platform)
@@ -214,7 +194,11 @@ func (l *lockfile) Touch() error {
 	defer l.stateMutex.Unlock()
 	l.lw = stringid.GenerateRandomID()
 	id := []byte(l.lw)
-	n, err := unix.Pwrite(int(l.fd), id, 0)
+	_, err := unix.Seek(int(l.fd), 0, os.SEEK_SET)
+	if err != nil {
+		return err
+	}
+	n, err := unix.Write(int(l.fd), id)
 	if err != nil {
 		return err
 	}
@@ -233,7 +217,11 @@ func (l *lockfile) Modified() (bool, error) {
 		panic("attempted to check last-writer in lockfile without locking it first")
 	}
 	defer l.stateMutex.Unlock()
-	n, err := unix.Pread(int(l.fd), id, 0)
+	_, err := unix.Seek(int(l.fd), 0, os.SEEK_SET)
+	if err != nil {
+		return true, err
+	}
+	n, err := unix.Read(int(l.fd), id)
 	if err != nil {
 		return true, err
 	}

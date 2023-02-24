@@ -5,9 +5,7 @@ import (
 	"io"
 
 	"github.com/containers/buildah/define"
-	"github.com/containers/buildah/pkg/sshagent"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -72,8 +70,6 @@ const (
 
 // RunOptions can be used to alter how a command is run in the container.
 type RunOptions struct {
-	// Logger is the logrus logger to write log messages with
-	Logger *logrus.Logger `json:"-"`
 	// Hostname is the hostname we set for the running container.
 	Hostname string
 	// Isolation is either IsolationDefault, IsolationOCI, IsolationChroot, or IsolationOCIRootless.
@@ -138,21 +134,4 @@ type RunOptions struct {
 	DropCapabilities []string
 	// Devices are the additional devices to add to the containers
 	Devices define.ContainerDevices
-	// Secrets are the available secrets to use in a RUN
-	Secrets map[string]string
-	// SSHSources is the available ssh agents to use in a RUN
-	SSHSources map[string]*sshagent.Source `json:"-"`
-	// RunMounts are mounts for this run. RunMounts for this run
-	// will not show up in subsequent runs.
-	RunMounts []string
-}
-
-// RunMountArtifacts are the artifacts created when using a run mount.
-type runMountArtifacts struct {
-	// RunMountTargets are the run mount targets inside the container
-	RunMountTargets []string
-	// Agents are the ssh agents started
-	Agents []*sshagent.AgentServer
-	// SSHAuthSock is the path to the ssh auth sock inside the container
-	SSHAuthSock string
 }

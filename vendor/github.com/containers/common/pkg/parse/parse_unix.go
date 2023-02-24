@@ -22,7 +22,7 @@ func DeviceFromPath(device string) ([]devices.Device, error) {
 	}
 	srcInfo, err := os.Stat(src)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "error getting info of source device %s", src)
 	}
 
 	if !srcInfo.IsDir() {

@@ -17,9 +17,8 @@ const whiteSpaces = " \t"
 // DefaultEnvVariables returns a default environment, with $PATH and $TERM set.
 func DefaultEnvVariables() map[string]string {
 	return map[string]string{
-		"PATH":      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"TERM":      "xterm",
-		"container": "podman",
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"TERM": "xterm",
 	}
 }
 

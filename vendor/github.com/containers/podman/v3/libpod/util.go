@@ -153,22 +153,33 @@ func queryPackageVersion(cmdArg ...string) string {
 	return strings.Trim(output, "\n")
 }
 
-func packageVersion(program string) string { // program is full path
-	packagers := [][]string{
-		{"/usr/bin/rpm", "-q", "-f"},
-		{"/usr/bin/dpkg", "-S"},    // Debian, Ubuntu
-		{"/usr/bin/pacman", "-Qo"}, // Arch
-		{"/usr/bin/qfile", "-qv"},  // Gentoo (quick)
-		{"/usr/bin/equery", "b"},   // Gentoo (slow)
-	}
+func equeryVersion(path string) string {
+	return queryPackageVersion("/usr/bin/equery", "b", path)
+}
 
-	for _, cmd := range packagers {
-		cmd = append(cmd, program)
-		if out := queryPackageVersion(cmd...); out != unknownPackage {
-			return out
-		}
+func pacmanVersion(path string) string {
+	return queryPackageVersion("/usr/bin/pacman", "-Qo", path)
+}
+
+func dpkgVersion(path string) string {
+	return queryPackageVersion("/usr/bin/dpkg", "-S", path)
+}
+
+func rpmVersion(path string) string {
+	return queryPackageVersion("/usr/bin/rpm", "-q", "-f", path)
+}
+
+func packageVersion(program string) string {
+	if out := rpmVersion(program); out != unknownPackage {
+		return out
 	}
-	return unknownPackage
+	if out := dpkgVersion(program); out != unknownPackage {
+		return out
+	}
+	if out := pacmanVersion(program); out != unknownPackage {
+		return out
+	}
+	return equeryVersion(program)
 }
 
 func programVersion(mountProgram string) (string, error) {
@@ -183,15 +194,7 @@ func programVersion(mountProgram string) (string, error) {
 // if it exists, first it checks OverrideSeccomp and then default.
 // If neither exist function returns ""
 func DefaultSeccompPath() (string, error) {
-	def, err := config.Default()
-	if err != nil {
-		return "", err
-	}
-	if def.Containers.SeccompProfile != "" {
-		return def.Containers.SeccompProfile, nil
-	}
-
-	_, err = os.Stat(config.SeccompOverridePath)
+	_, err := os.Stat(config.SeccompOverridePath)
 	if err == nil {
 		return config.SeccompOverridePath, nil
 	}
@@ -295,8 +298,8 @@ func writeHijackHeader(r *http.Request, conn io.Writer) {
 }
 
 // Convert OCICNI port bindings into Inspect-formatted port bindings.
-func makeInspectPortBindings(bindings []ocicni.PortMapping, expose map[uint16][]string) map[string][]define.InspectHostPort {
-	portBindings := make(map[string][]define.InspectHostPort, len(bindings))
+func makeInspectPortBindings(bindings []ocicni.PortMapping) map[string][]define.InspectHostPort {
+	portBindings := make(map[string][]define.InspectHostPort)
 	for _, port := range bindings {
 		key := fmt.Sprintf("%d/%s", port.ContainerPort, port.Protocol)
 		hostPorts := portBindings[key]
@@ -308,15 +311,6 @@ func makeInspectPortBindings(bindings []ocicni.PortMapping, expose map[uint16][]
 			HostPort: fmt.Sprintf("%d", port.HostPort),
 		})
 		portBindings[key] = hostPorts
-	}
-	// add exposed ports without host port information to match docker
-	for port, protocols := range expose {
-		for _, protocol := range protocols {
-			key := fmt.Sprintf("%d/%s", port, protocol)
-			if _, ok := portBindings[key]; !ok {
-				portBindings[key] = nil
-			}
-		}
 	}
 	return portBindings
 }

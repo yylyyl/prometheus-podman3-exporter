@@ -38,7 +38,7 @@ func NewPatternMatcher(patterns []string) (*PatternMatcher, error) {
 				return nil, errors.New("illegal exclusion pattern: \"!\"")
 			}
 			newp.exclusion = true
-			p = strings.TrimPrefix(filepath.Clean(p[1:]), "/")
+			p = p[1:]
 			pm.exclusions = true
 		}
 		// Do some syntax checking on the pattern.

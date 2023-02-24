@@ -1,4 +1,3 @@
-//go:build containers_image_ostree
 // +build containers_image_ostree
 
 package ostree
@@ -21,7 +20,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/containers/image/v5/internal/putblobdigest"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage/pkg/archive"
@@ -140,7 +138,7 @@ func (d *ostreeImageDestination) HasThreadSafePutBlob() bool {
 }
 
 // PutBlob writes contents of stream and returns data representing the result.
-// inputInfo.Digest can be optionally provided if known; if provided, and stream is read to the end without error, the digest MUST match the stream contents.
+// inputInfo.Digest can be optionally provided if known; it is not mandatory for the implementation to verify it.
 // inputInfo.Size is the expected length of stream, if known.
 // inputInfo.MediaType describes the blob format, if known.
 // May update cache.
@@ -160,23 +158,25 @@ func (d *ostreeImageDestination) PutBlob(ctx context.Context, stream io.Reader, 
 	}
 	defer blobFile.Close()
 
-	digester, stream := putblobdigest.DigestIfCanonicalUnknown(stream, inputInfo)
+	digester := digest.Canonical.Digester()
+	tee := io.TeeReader(stream, digester.Hash())
+
 	// TODO: This can take quite some time, and should ideally be cancellable using ctx.Done().
-	size, err := io.Copy(blobFile, stream)
+	size, err := io.Copy(blobFile, tee)
 	if err != nil {
 		return types.BlobInfo{}, err
 	}
-	blobDigest := digester.Digest()
+	computedDigest := digester.Digest()
 	if inputInfo.Size != -1 && size != inputInfo.Size {
-		return types.BlobInfo{}, errors.Errorf("Size mismatch when copying %s, expected %d, got %d", blobDigest, inputInfo.Size, size)
+		return types.BlobInfo{}, errors.Errorf("Size mismatch when copying %s, expected %d, got %d", computedDigest, inputInfo.Size, size)
 	}
 	if err := blobFile.Sync(); err != nil {
 		return types.BlobInfo{}, err
 	}
 
-	hash := blobDigest.Hex()
-	d.blobs[hash] = &blobToImport{Size: size, Digest: blobDigest, BlobPath: blobPath}
-	return types.BlobInfo{Digest: blobDigest, Size: size}, nil
+	hash := computedDigest.Hex()
+	d.blobs[hash] = &blobToImport{Size: size, Digest: computedDigest, BlobPath: blobPath}
+	return types.BlobInfo{Digest: computedDigest, Size: size}, nil
 }
 
 func fixFiles(selinuxHnd *C.struct_selabel_handle, root string, dir string, usermode bool) error {

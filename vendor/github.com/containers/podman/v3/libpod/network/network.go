@@ -111,10 +111,8 @@ func allocatorToIPNets(networks []*allocator.Net) []*net.IPNet {
 		if len(network.IPAM.Ranges) > 0 {
 			// this is the new IPAM range style
 			// append each subnet from ipam the rangeset
-			for _, allocatorRange := range network.IPAM.Ranges {
-				for _, r := range allocatorRange {
-					nets = append(nets, newIPNetFromSubnet(r.Subnet))
-				}
+			for _, r := range network.IPAM.Ranges[0] {
+				nets = append(nets, newIPNetFromSubnet(r.Subnet))
 			}
 		} else {
 			//	 looks like the old, deprecated style
@@ -194,9 +192,8 @@ func removeNetwork(config *config.Config, name string) error {
 				return errors.Wrapf(err, "failed to get live network names")
 			}
 			if util.StringInSlice(interfaceName, liveNetworkNames) {
-				if err = RemoveInterface(interfaceName); err != nil {
-					// only log the error, it is not fatal
-					logrus.Infof("failed to remove network interface %s: %v", interfaceName, err)
+				if err := RemoveInterface(interfaceName); err != nil {
+					return errors.Wrapf(err, "failed to delete the network interface %q", interfaceName)
 				}
 			}
 		}

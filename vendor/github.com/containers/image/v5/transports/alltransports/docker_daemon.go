@@ -1,4 +1,3 @@
-//go:build !containers_image_docker_daemon_stub
 // +build !containers_image_docker_daemon_stub
 
 package alltransports

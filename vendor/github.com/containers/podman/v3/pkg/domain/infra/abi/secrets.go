@@ -6,42 +6,27 @@ import (
 	"io/ioutil"
 	"path/filepath"
 
+	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/utils"
 	"github.com/pkg/errors"
 )
 
 func (ic *ContainerEngine) SecretCreate(ctx context.Context, name string, reader io.Reader, options entities.SecretCreateOptions) (*entities.SecretCreateReport, error) {
 	data, _ := ioutil.ReadAll(reader)
 	secretsPath := ic.Libpod.GetSecretsStorageDir()
-	manager, err := ic.Libpod.SecretsManager()
+	manager, err := secrets.NewManager(secretsPath)
 	if err != nil {
 		return nil, err
 	}
+	driverOptions := make(map[string]string)
 
-	// set defaults from config for the case they are not set by an upper layer
-	// (-> i.e. tests that talk directly to the api)
-	cfg, err := ic.Libpod.GetConfig()
-	if err != nil {
-		return nil, err
-	}
 	if options.Driver == "" {
-		options.Driver = cfg.Secrets.Driver
+		options.Driver = "file"
 	}
-	if len(options.DriverOpts) == 0 {
-		options.DriverOpts = cfg.Secrets.Opts
-	}
-	if options.DriverOpts == nil {
-		options.DriverOpts = make(map[string]string)
-	}
-
 	if options.Driver == "file" {
-		if _, ok := options.DriverOpts["path"]; !ok {
-			options.DriverOpts["path"] = filepath.Join(secretsPath, "filedriver")
-		}
+		driverOptions["path"] = filepath.Join(secretsPath, "filedriver")
 	}
-
-	secretID, err := manager.Store(name, data, options.Driver, options.DriverOpts)
+	secretID, err := manager.Store(name, data, options.Driver, driverOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +36,8 @@ func (ic *ContainerEngine) SecretCreate(ctx context.Context, name string, reader
 }
 
 func (ic *ContainerEngine) SecretInspect(ctx context.Context, nameOrIDs []string) ([]*entities.SecretInfoReport, []error, error) {
-	manager, err := ic.Libpod.SecretsManager()
+	secretsPath := ic.Libpod.GetSecretsStorageDir()
+	manager, err := secrets.NewManager(secretsPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -74,8 +60,7 @@ func (ic *ContainerEngine) SecretInspect(ctx context.Context, nameOrIDs []string
 			Spec: entities.SecretSpec{
 				Name: secret.Name,
 				Driver: entities.SecretDriverSpec{
-					Name:    secret.Driver,
-					Options: secret.DriverOptions,
+					Name: secret.Driver,
 				},
 			},
 		}
@@ -85,8 +70,9 @@ func (ic *ContainerEngine) SecretInspect(ctx context.Context, nameOrIDs []string
 	return reports, errs, nil
 }
 
-func (ic *ContainerEngine) SecretList(ctx context.Context, opts entities.SecretListRequest) ([]*entities.SecretInfoReport, error) {
-	manager, err := ic.Libpod.SecretsManager()
+func (ic *ContainerEngine) SecretList(ctx context.Context) ([]*entities.SecretInfoReport, error) {
+	secretsPath := ic.Libpod.GetSecretsStorageDir()
+	manager, err := secrets.NewManager(secretsPath)
 	if err != nil {
 		return nil, err
 	}
@@ -96,25 +82,19 @@ func (ic *ContainerEngine) SecretList(ctx context.Context, opts entities.SecretL
 	}
 	report := make([]*entities.SecretInfoReport, 0, len(secretList))
 	for _, secret := range secretList {
-		result, err := utils.IfPassesSecretsFilter(secret, opts.Filters)
-		if err != nil {
-			return nil, err
-		}
-		if result {
-			reportItem := entities.SecretInfoReport{
-				ID:        secret.ID,
-				CreatedAt: secret.CreatedAt,
-				UpdatedAt: secret.CreatedAt,
-				Spec: entities.SecretSpec{
-					Name: secret.Name,
-					Driver: entities.SecretDriverSpec{
-						Name:    secret.Driver,
-						Options: secret.DriverOptions,
-					},
+		reportItem := entities.SecretInfoReport{
+			ID:        secret.ID,
+			CreatedAt: secret.CreatedAt,
+			UpdatedAt: secret.CreatedAt,
+			Spec: entities.SecretSpec{
+				Name: secret.Name,
+				Driver: entities.SecretDriverSpec{
+					Name:    secret.Driver,
+					Options: secret.DriverOptions,
 				},
-			}
-			report = append(report, &reportItem)
+			},
 		}
+		report = append(report, &reportItem)
 	}
 	return report, nil
 }
@@ -125,7 +105,8 @@ func (ic *ContainerEngine) SecretRm(ctx context.Context, nameOrIDs []string, opt
 		toRemove []string
 		reports  = []*entities.SecretRmReport{}
 	)
-	manager, err := ic.Libpod.SecretsManager()
+	secretsPath := ic.Libpod.GetSecretsStorageDir()
+	manager, err := secrets.NewManager(secretsPath)
 	if err != nil {
 		return nil, err
 	}

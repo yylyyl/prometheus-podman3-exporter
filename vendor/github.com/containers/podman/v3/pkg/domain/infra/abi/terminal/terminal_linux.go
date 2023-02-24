@@ -15,13 +15,12 @@ import (
 
 // ExecAttachCtr execs and attaches to a container
 func ExecAttachCtr(ctx context.Context, ctr *libpod.Container, execConfig *libpod.ExecConfig, streams *define.AttachStreams) (int, error) {
-	var resize chan define.TerminalSize
+	resize := make(chan define.TerminalSize)
 	haveTerminal := terminal.IsTerminal(int(os.Stdin.Fd()))
 
 	// Check if we are attached to a terminal. If we are, generate resize
 	// events, and set the terminal to raw mode
 	if haveTerminal && execConfig.Terminal {
-		resize = make(chan define.TerminalSize)
 		cancel, oldTermState, err := handleTerminalAttach(ctx, resize)
 		if err != nil {
 			return -1, err
@@ -33,13 +32,14 @@ func ExecAttachCtr(ctx context.Context, ctr *libpod.Container, execConfig *libpo
 			}
 		}()
 	}
+
 	return ctr.Exec(execConfig, streams, resize)
 }
 
 // StartAttachCtr starts and (if required) attaches to a container
 // if you change the signature of this function from os.File to io.Writer, it will trigger a downstream
 // error. we may need to just lint disable this one.
-func StartAttachCtr(ctx context.Context, ctr *libpod.Container, stdout, stderr, stdin *os.File, detachKeys string, sigProxy bool, startContainer bool) error { //nolint-interfacer
+func StartAttachCtr(ctx context.Context, ctr *libpod.Container, stdout, stderr, stdin *os.File, detachKeys string, sigProxy bool, startContainer bool, recursive bool) error { //nolint-interfacer
 	resize := make(chan define.TerminalSize)
 
 	haveTerminal := terminal.IsTerminal(int(os.Stdin.Fd()))
@@ -88,7 +88,7 @@ func StartAttachCtr(ctx context.Context, ctr *libpod.Container, stdout, stderr, 
 		return ctr.Attach(streams, detachKeys, resize)
 	}
 
-	attachChan, err := ctr.StartAndAttach(ctx, streams, detachKeys, resize, true)
+	attachChan, err := ctr.StartAndAttach(ctx, streams, detachKeys, resize, recursive)
 	if err != nil {
 		return err
 	}

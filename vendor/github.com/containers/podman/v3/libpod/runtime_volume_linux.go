@@ -12,7 +12,6 @@ import (
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/libpod/events"
 	volplugin "github.com/containers/podman/v3/libpod/plugin"
-	"github.com/containers/storage/drivers/quota"
 	"github.com/containers/storage/pkg/stringid"
 	pluginapi "github.com/docker/go-plugins-helpers/volume"
 	"github.com/pkg/errors"
@@ -69,7 +68,7 @@ func (r *Runtime) newVolume(ctx context.Context, options ...VolumeCreateOption) 
 		// Validate options
 		for key := range volume.config.Options {
 			switch key {
-			case "device", "o", "type", "UID", "GID", "SIZE", "INODES":
+			case "device", "o", "type", "UID", "GID":
 				// Do nothing, valid keys
 			default:
 				return nil, errors.Wrapf(define.ErrInvalidArg, "invalid mount option %s for driver 'local'", key)
@@ -107,26 +106,6 @@ func (r *Runtime) newVolume(ctx context.Context, options ...VolumeCreateOption) 
 		if err := LabelVolumePath(fullVolPath); err != nil {
 			return nil, err
 		}
-		projectQuotaSupported := false
-
-		q, err := quota.NewControl(r.config.Engine.VolumePath)
-		if err == nil {
-			projectQuotaSupported = true
-		}
-		quota := quota.Quota{}
-		if volume.config.Size > 0 || volume.config.Inodes > 0 {
-			if !projectQuotaSupported {
-				return nil, errors.New("Volume options size and inodes not supported. Filesystem does not support Project Quota")
-			}
-			quota.Size = volume.config.Size
-			quota.Inodes = volume.config.Inodes
-		}
-		if projectQuotaSupported {
-			if err := q.SetQuota(fullVolPath, quota); err != nil {
-				return nil, errors.Wrapf(err, "failed to set size quota size=%d inodes=%d for volume directory %q", volume.config.Size, volume.config.Inodes, fullVolPath)
-			}
-		}
-
 		volume.config.MountPoint = fullVolPath
 	}
 
@@ -255,6 +234,11 @@ func (r *Runtime) removeVolume(ctx context.Context, v *Volume, force bool) error
 	// Set volume as invalid so it can no longer be used
 	v.valid = false
 
+	// Remove the volume from the state
+	if err := r.state.RemoveVolume(v); err != nil {
+		return errors.Wrapf(err, "error removing volume %s", v.Name())
+	}
+
 	var removalErr error
 
 	// If we use a volume plugin, we need to remove from the plugin.
@@ -282,17 +266,9 @@ func (r *Runtime) removeVolume(ctx context.Context, v *Volume, force bool) error
 			req := new(pluginapi.RemoveRequest)
 			req.Name = v.Name()
 			if err := v.plugin.RemoveVolume(req); err != nil {
-				return errors.Wrapf(err, "volume %s could not be removed from plugin %s", v.Name(), v.Driver())
+				removalErr = errors.Wrapf(err, "volume %s could not be removed from plugin %s, but it has been removed from Podman", v.Name(), v.Driver())
 			}
 		}
-	}
-
-	// Remove the volume from the state
-	if err := r.state.RemoveVolume(v); err != nil {
-		if removalErr != nil {
-			logrus.Errorf("Error removing volume %s from plugin %s: %v", v.Name(), v.Driver(), removalErr)
-		}
-		return errors.Wrapf(err, "error removing volume %s", v.Name())
 	}
 
 	// Free the volume's lock

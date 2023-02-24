@@ -30,45 +30,29 @@ func ConvertToLibpodEvent(e Event) *libpodEvents.Event {
 	if err != nil {
 		return nil
 	}
-	image := e.Actor.Attributes["image"]
-	name := e.Actor.Attributes["name"]
-	details := e.Actor.Attributes
-	delete(details, "image")
-	delete(details, "name")
-	delete(details, "containerExitCode")
 	return &libpodEvents.Event{
 		ContainerExitCode: exitCode,
 		ID:                e.Actor.ID,
-		Image:             image,
-		Name:              name,
+		Image:             e.Actor.Attributes["image"],
+		Name:              e.Actor.Attributes["name"],
 		Status:            status,
 		Time:              time.Unix(e.Time, e.TimeNano),
 		Type:              t,
-		Details: libpodEvents.Details{
-			Attributes: details,
-		},
 	}
 }
 
 // ConvertToEntitiesEvent converts a libpod event to an entities one.
 func ConvertToEntitiesEvent(e libpodEvents.Event) *Event {
-	attributes := e.Details.Attributes
-	if attributes == nil {
-		attributes = make(map[string]string)
-	}
-	attributes["image"] = e.Image
-	attributes["name"] = e.Name
-	attributes["containerExitCode"] = strconv.Itoa(e.ContainerExitCode)
 	return &Event{dockerEvents.Message{
-		// Compatibility with clients that still look for deprecated API elements
-		Status: e.Status.String(),
-		ID:     e.ID,
-		From:   e.Image,
 		Type:   e.Type.String(),
 		Action: e.Status.String(),
 		Actor: dockerEvents.Actor{
-			ID:         e.ID,
-			Attributes: attributes,
+			ID: e.ID,
+			Attributes: map[string]string{
+				"image":             e.Image,
+				"name":              e.Name,
+				"containerExitCode": strconv.Itoa(e.ContainerExitCode),
+			},
 		},
 		Scope:    "local",
 		Time:     e.Time.Unix(),

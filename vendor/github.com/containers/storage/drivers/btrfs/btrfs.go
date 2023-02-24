@@ -88,7 +88,7 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 	}
 
 	if userDiskQuota {
-		if err := driver.enableQuota(); err != nil {
+		if err := driver.subvolEnableQuota(); err != nil {
 			return nil, err
 		}
 	}
@@ -159,6 +159,10 @@ func (d *Driver) Metadata(id string) (map[string]string, error) {
 
 // Cleanup unmounts the home directory.
 func (d *Driver) Cleanup() error {
+	if err := d.subvolDisableQuota(); err != nil {
+		return err
+	}
+
 	return mount.Unmount(d.home)
 }
 
@@ -316,7 +320,7 @@ func (d *Driver) updateQuotaStatus() {
 	d.once.Do(func() {
 		if !d.quotaEnabled {
 			// In case quotaEnabled is not set, check qgroup and update quotaEnabled as needed
-			if err := qgroupStatus(d.home); err != nil {
+			if err := subvolQgroupStatus(d.home); err != nil {
 				// quota is still not enabled
 				return
 			}
@@ -325,7 +329,7 @@ func (d *Driver) updateQuotaStatus() {
 	})
 }
 
-func (d *Driver) enableQuota() error {
+func (d *Driver) subvolEnableQuota() error {
 	d.updateQuotaStatus()
 
 	if d.quotaEnabled {
@@ -347,6 +351,32 @@ func (d *Driver) enableQuota() error {
 	}
 
 	d.quotaEnabled = true
+
+	return nil
+}
+
+func (d *Driver) subvolDisableQuota() error {
+	d.updateQuotaStatus()
+
+	if !d.quotaEnabled {
+		return nil
+	}
+
+	dir, err := openDir(d.home)
+	if err != nil {
+		return err
+	}
+	defer closeDir(dir)
+
+	var args C.struct_btrfs_ioctl_quota_ctl_args
+	args.cmd = C.BTRFS_QUOTA_CTL_DISABLE
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, getDirFd(dir), C.BTRFS_IOC_QUOTA_CTL,
+		uintptr(unsafe.Pointer(&args)))
+	if errno != 0 {
+		return fmt.Errorf("Failed to disable btrfs quota for %s: %v", dir, errno.Error())
+	}
+
+	d.quotaEnabled = false
 
 	return nil
 }
@@ -393,11 +423,11 @@ func subvolLimitQgroup(path string, size uint64) error {
 	return nil
 }
 
-// qgroupStatus performs a BTRFS_IOC_TREE_SEARCH on the root path
+// subvolQgroupStatus performs a BTRFS_IOC_TREE_SEARCH on the root path
 // with search key of BTRFS_QGROUP_STATUS_KEY.
 // In case qgroup is enabled, the returned key type will match BTRFS_QGROUP_STATUS_KEY.
 // For more details please see https://github.com/kdave/btrfs-progs/blob/v4.9/qgroup.c#L1035
-func qgroupStatus(path string) error {
+func subvolQgroupStatus(path string) error {
 	dir, err := openDir(path)
 	if err != nil {
 		return err
@@ -573,7 +603,7 @@ func (d *Driver) setStorageSize(dir string, driver *Driver) error {
 		return fmt.Errorf("btrfs: storage size cannot be less than %s", units.HumanSize(float64(d.options.minSpace)))
 	}
 
-	if err := d.enableQuota(); err != nil {
+	if err := d.subvolEnableQuota(); err != nil {
 		return err
 	}
 
@@ -644,7 +674,7 @@ func (d *Driver) Get(id string, options graphdriver.MountOpts) (string, error) {
 
 	if quota, err := ioutil.ReadFile(d.quotasDirID(id)); err == nil {
 		if size, err := strconv.ParseUint(string(quota), 10, 64); err == nil && size >= d.options.minSpace {
-			if err := d.enableQuota(); err != nil {
+			if err := d.subvolEnableQuota(); err != nil {
 				return "", err
 			}
 			if err := subvolLimitQgroup(dir, size); err != nil {

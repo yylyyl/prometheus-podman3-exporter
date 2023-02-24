@@ -1,8 +1,21 @@
-![buildah logo](https://cdn.rawgit.com/containers/buildah/main/logos/buildah-logo_large.png)
+![buildah logo](https://cdn.rawgit.com/containers/buildah/master/logos/buildah-logo_large.png)
 
 # Installation Instructions
 
 ## Installing packaged versions of buildah
+
+#### [Amazon Linux 2](https://aws.amazon.com/amazon-linux-2/)
+
+The [Kubic project](https://build.opensuse.org/project/show/devel:kubic:libcontainers:stable)
+provides updated packages for CentOS 7 which can be used unmodified on Amazon Linux 2.
+
+```bash
+cd /etc/yum.repos.d/
+sudo wget https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_7/devel:kubic:libcontainers:stable.repo
+sudo yum -y install yum-plugin-copr
+sudo yum -y copr enable lsm5/container-selinux
+sudo yum -y install buildah
+```
 
 ### [Arch Linux](https://www.archlinux.org)
 
@@ -21,28 +34,26 @@ sudo yum -y install buildah
 ```
 
 The [Kubic project](https://build.opensuse.org/project/show/devel:kubic:libcontainers:stable)
-provides updated packages for CentOS 8 and CentOS 8 Stream.
+provides updated packages for CentOS 7, 8 and Stream.
 
 ```bash
+# CentOS 7
+sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_7/devel:kubic:libcontainers:stable.repo
+sudo yum -y install buildah
+
 # CentOS 8
 sudo dnf -y module disable container-tools
 sudo dnf -y install 'dnf-command(copr)'
 sudo dnf -y copr enable rhcontainerbot/container-selinux
 sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_8/devel:kubic:libcontainers:stable.repo
-# OPTIONAL FOR RUNC USERS: crun will be installed by default. Install runc first if you prefer runc
-sudo dnf -y --refresh install runc
-# Install Buildah
-sudo dnf -y --refresh install buildah
+sudo dnf -y install buildah
 
-# CentOS 8 Stream
+# CentOS Stream
 sudo dnf -y module disable container-tools
 sudo dnf -y install 'dnf-command(copr)'
 sudo dnf -y copr enable rhcontainerbot/container-selinux
 sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_8_Stream/devel:kubic:libcontainers:stable.repo
-# OPTIONAL FOR RUNC USERS: crun will be installed by default. Install runc first if you prefer runc
-sudo dnf -y --refresh install runc
-# Install Buildah
-sudo dnf -y --refresh install buildah
+sudo dnf -y install buildah
 ```
 
 
@@ -57,6 +68,36 @@ will be the next stable release (Debian 11) as well as Debian Unstable/Sid.
 sudo apt-get update
 sudo apt-get -y install buildah
 ```
+
+If you would prefer newer (though not as well-tested) packages,
+the [Kubic project](https://build.opensuse.org/package/show/devel:kubic:libcontainers:stable/buildah)
+provides packages for Debian 10 and newer. The packages in Kubic project repos are more frequently
+updated than the one in Debian's official repositories, due to how Debian works.
+The build sources for the Kubic packages can be found [here](https://gitlab.com/rhcontainerbot/buildah/-/tree/debian/debian).
+
+CAUTION: On Debian 11 and newer, including Testing and Sid/Unstable, we highly recommend you use Buildah, Podman and Skopeo ONLY from EITHER the Kubic repo
+OR the official Debian repos. Mixing and matching may lead to unpredictable situations including installation conflicts.
+
+```bash
+# Debian 10
+echo 'deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_10/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_10/Release.key | sudo apt-key add -
+sudo apt-get update
+sudo apt-get -y install buildah
+
+# Debian Testing
+echo 'deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Testing/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Testing/Release.key | sudo apt-key add -
+sudo apt-get update
+sudo apt-get -y install buildah
+
+# Debian Sid/Unstable
+echo 'deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Unstable/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Unstable/Release.key | sudo apt-key add -
+sudo apt-get update
+sudo apt-get -y install buildah
+```
+
 
 
 ### [Fedora](https://www.fedoraproject.org)
@@ -102,11 +143,26 @@ sudo subscription-manager repos --enable=rhel-7-server-extras-rpms
 sudo yum -y install buildah
 ```
 
+#### [Raspberry Pi OS armhf (ex Raspbian)](https://www.raspberrypi.org/downloads/raspberry-pi-os/)
+
+The [Kubic project](https://build.opensuse.org/package/show/devel:kubic:libcontainers:stable/buildah) provides
+packages for Raspbian 10.
+
+```bash
+# Raspbian 10
+echo 'deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Raspbian_10/ /' | sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
+curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Raspbian_10/Release.key | sudo apt-key add -
+sudo apt-get update -qq
+sudo apt-get -qq -y install buildah
+```
+
+The build sources for the Kubic packages can be found [here](https://gitlab.com/rhcontainerbot/buildah/-/tree/debian/debian).
+
 #### [Raspberry Pi OS arm64 (beta)](https://downloads.raspberrypi.org/raspios_arm64/images/)
 
 Raspberry Pi OS use the standard Debian's repositories,
 so it is fully compatible with Debian's arm64 repository.
-You can simply follow the [steps for Debian](#debian) to install buildah.
+You can simply follow the [steps for Debian](#debian) to install podman.
 
 
 ### [RHEL8 Beta](https://www.redhat.com/en/blog/powering-its-future-while-preserving-present-introducing-red-hat-enterprise-linux-8-beta?intcmp=701f2000001Cz6OAAS)
@@ -129,7 +185,7 @@ sudo apt-get -y install buildah
 
 If you would prefer newer (though not as well-tested) packages,
 the [Kubic project](https://build.opensuse.org/package/show/devel:kubic:libcontainers:stable/buildah)
-provides packages for active Ubuntu releases 20.04 and newer (it should also work with direct derivatives like Pop!\_OS).
+provides packages for active Ubuntu releases 18.04 and newer (it should also work with direct derivatives like Pop!\_OS).
 The packages in Kubic project repos are more frequently updated than the one in Ubuntu's official repositories, due to how Debian/Ubuntu works.
 Checkout the Kubic project page for a list of supported Ubuntu version and architecture combinations.
 The build sources for the Kubic packages can be found [here](https://gitlab.com/rhcontainerbot/buildah/-/tree/debian/debian).
@@ -153,11 +209,13 @@ sudo apt-get -qq -y install buildah
 
 ### Kernel Version Requirements
 To run Buildah on Red Hat Enterprise Linux or CentOS, version 7.4 or higher is required.
-On other Linux distributions Buildah requires a kernel version that supports the OverlayFS and/or fuse-overlayfs filesystem -- you'll need to consult your distribution's documentation to determine a minimum version number.
+On other Linux distributions Buildah requires a kernel version of 4.0 or
+higher in order to support the OverlayFS filesystem.  The kernel version can be checked
+with the 'uname -a' command.
 
 ### runc Requirement
 
-Buildah uses `runc` to run commands when `buildah run` is used, or when `buildah build`
+Buildah uses `runc` to run commands when `buildah run` is used, or when `buildah build-using-dockerfile`
 encounters a `RUN` instruction, so you'll also need to build and install a compatible version of
 [runc](https://github.com/opencontainers/runc) for Buildah to call for those cases.  If Buildah is installed
 via a package manager such as yum, dnf or apt-get, runc will be installed as part of that process.
@@ -191,7 +249,7 @@ The CNI library needs to be configured so that it will know which plugins to
 call to set up namespaces.  Usually, this configuration takes the form of one
 or more configuration files in the `/etc/cni/net.d` directory.  A set of example
 configuration files is included in the
-[`docs/cni-examples`](https://github.com/containers/buildah/tree/main/docs/cni-examples)
+[`docs/cni-examples`](https://github.com/containers/buildah/tree/master/docs/cni-examples)
 directory of this source tree.
 
 ## Package Installation
@@ -353,9 +411,9 @@ This project is using [go modules](https://github.com/golang/go/wiki/Modules) fo
 The following configuration files are required in order for Buildah to run appropriately.  The
 majority of these files are commonly contained in the `containers-common` package.
 
-### [registries.conf](https://github.com/containers/buildah/blob/main/docs/samples/registries.conf)
+### [registries.conf](https://github.com/containers/buildah/blob/master/docs/samples/registries.conf)
 
-#### Man Page: [registries.conf.5](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)
+#### Man Page: [registries.conf.5](https://github.com/containers/image/blob/master/docs/containers-registries.conf.5.md)
 
 `/etc/containers/registries.conf`
 
@@ -392,11 +450,11 @@ registries = []
 registries = []
 ```
 
-### [mounts.conf](https://src.fedoraproject.org/rpms/skopeo/blob/main/f/mounts.conf)
+### [mounts.conf](https://src.fedoraproject.org/rpms/skopeo/blob/master/f/mounts.conf)
 
 `/usr/share/containers/mounts.conf` and optionally `/etc/containers/mounts.conf`
 
-The mounts.conf files specify volume mount files or directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build` commands.  Container processes can then use this content.  The volume mount content does not get committed to the final image.  This file is usually provided by the containers-common package.
+The mounts.conf files specify volume mount files or directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build-using-dockerfile` commands.  Container processes can then use this content.  The volume mount content does not get committed to the final image.  This file is usually provided by the containers-common package.
 
 Usually these directories are used for passing secrets or credentials required by the package software to access remote package repositories.
 
@@ -411,7 +469,7 @@ cat /usr/share/containers/mounts.conf
 /usr/share/rhel/secrets:/run/secrets
 ```
 
-### [seccomp.json](https://src.fedoraproject.org/rpms/skopeo/blob/main/f/seccomp.json)
+### [seccomp.json](https://src.fedoraproject.org/rpms/skopeo/blob/master/f/seccomp.json)
 
 `/usr/share/containers/seccomp.json`
 
@@ -420,11 +478,11 @@ containers.  This file is usually provided by the containers-common package.
 
 The link above takes you to the seccomp.json
 
-### [policy.json](https://github.com/containers/skopeo/blob/main/default-policy.json)
+### [policy.json](https://github.com/containers/skopeo/blob/master/default-policy.json)
 
 `/etc/containers/policy.json`
 
-#### Man Page: [policy.json.5](https://github.com/containers/image/blob/main/docs/policy.json.md)
+#### Man Page: [policy.json.5](https://github.com/containers/image/blob/master/docs/policy.json.md)
 
 
 #### Example from the Fedora `containers-common` package:

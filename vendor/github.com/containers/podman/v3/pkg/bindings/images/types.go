@@ -16,10 +16,6 @@ type RemoveOptions struct {
 //go:generate go run ../generator/generator.go DiffOptions
 // DiffOptions are optional options image diffs
 type DiffOptions struct {
-	// By the default diff will compare against the parent layer. Change the Parent if you want to compare against something else.
-	Parent *string
-	// Change the type the backend should match. This can be set to "all", "container" or "image".
-	DiffType *string
 }
 
 //go:generate go run ../generator/generator.go ListOptions
@@ -151,9 +147,6 @@ type PullOptions struct {
 	// OS will overwrite the local operating system (OS) for image
 	// pulls.
 	OS *string
-	// Policy is the pull policy. Supported values are "missing", "never",
-	// "newer", "always". An empty string defaults to "always".
-	Policy *string
 	// Password for authenticating against the registry.
 	Password *string
 	// Quiet can be specified to suppress pull progress when pulling.  Ignored

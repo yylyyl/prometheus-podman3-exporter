@@ -3,12 +3,12 @@ package generate
 import (
 	"strings"
 
-	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/apparmor"
 	"github.com/containers/common/pkg/capabilities"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/podman/v3/libpod"
 	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/containers/podman/v3/pkg/util"
 	"github.com/opencontainers/runtime-tools/generate"
@@ -80,7 +80,7 @@ func setupApparmor(s *specgen.SpecGenerator, rtc *config.Config, g *generate.Gen
 	return nil
 }
 
-func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator, newImage *libimage.Image, rtc *config.Config) error {
+func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator, newImage *image.Image, rtc *config.Config) error {
 	var (
 		caplist []string
 		err     error
@@ -146,10 +146,6 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 	configSpec := g.Config
 	configSpec.Process.Capabilities.Ambient = []string{}
-
-	// Always unset the inheritable capabilities similarly to what the Linux kernel does
-	// They are used only when using capabilities with uid != 0.
-	configSpec.Process.Capabilities.Inheritable = []string{}
 	configSpec.Process.Capabilities.Bounding = caplist
 
 	user := strings.Split(s.User, ":")[0]
@@ -157,6 +153,7 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 	if (user == "" && s.UserNS.NSMode != specgen.KeepID) || user == "root" || user == "0" {
 		configSpec.Process.Capabilities.Effective = caplist
 		configSpec.Process.Capabilities.Permitted = caplist
+		configSpec.Process.Capabilities.Inheritable = caplist
 	} else {
 		mergedCaps, err := capabilities.MergeCapabilities(nil, s.CapAdd, nil)
 		if err != nil {
@@ -178,12 +175,12 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 		}
 		configSpec.Process.Capabilities.Effective = userCaps
 		configSpec.Process.Capabilities.Permitted = userCaps
+		configSpec.Process.Capabilities.Inheritable = userCaps
 
 		// Ambient capabilities were added to Linux 4.3.  Set ambient
 		// capabilities only when the kernel supports them.
 		if supportAmbientCapabilities() {
 			configSpec.Process.Capabilities.Ambient = userCaps
-			configSpec.Process.Capabilities.Inheritable = userCaps
 		}
 	}
 

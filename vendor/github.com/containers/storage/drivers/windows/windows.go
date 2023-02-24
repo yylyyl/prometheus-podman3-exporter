@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"

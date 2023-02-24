@@ -97,36 +97,24 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		return nil, err
 	}
 
-	cgroupPath, err := c.cGroupPath()
-	if err != nil {
-		// Handle the case where the container is not running or has no cgroup.
-		if errors.Is(err, define.ErrNoCgroups) || errors.Is(err, define.ErrCtrStopped) {
-			cgroupPath = ""
-		} else {
-			return nil, err
-		}
-	}
-
 	data := &define.InspectContainerData{
 		ID:      config.ID,
 		Created: config.CreatedTime,
 		Path:    path,
 		Args:    args,
 		State: &define.InspectContainerState{
-			OciVersion:   ctrSpec.Version,
-			Status:       runtimeInfo.State.String(),
-			Running:      runtimeInfo.State == define.ContainerStateRunning,
-			Paused:       runtimeInfo.State == define.ContainerStatePaused,
-			OOMKilled:    runtimeInfo.OOMKilled,
-			Dead:         runtimeInfo.State.String() == "bad state",
-			Pid:          runtimeInfo.PID,
-			ConmonPid:    runtimeInfo.ConmonPID,
-			ExitCode:     runtimeInfo.ExitCode,
-			Error:        "", // can't get yet
-			StartedAt:    runtimeInfo.StartedTime,
-			FinishedAt:   runtimeInfo.FinishedTime,
-			Checkpointed: runtimeInfo.Checkpointed,
-			CgroupPath:   cgroupPath,
+			OciVersion: ctrSpec.Version,
+			Status:     runtimeInfo.State.String(),
+			Running:    runtimeInfo.State == define.ContainerStateRunning,
+			Paused:     runtimeInfo.State == define.ContainerStatePaused,
+			OOMKilled:  runtimeInfo.OOMKilled,
+			Dead:       runtimeInfo.State.String() == "bad state",
+			Pid:        runtimeInfo.PID,
+			ConmonPid:  runtimeInfo.ConmonPID,
+			ExitCode:   runtimeInfo.ExitCode,
+			Error:      "", // can't get yet
+			StartedAt:  runtimeInfo.StartedTime,
+			FinishedAt: runtimeInfo.FinishedTime,
 		},
 		Image:           config.RootfsImageID,
 		ImageName:       config.RootfsImageName,
@@ -140,7 +128,6 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		StaticDir:       config.StaticDir,
 		OCIRuntime:      config.OCIRuntime,
 		ConmonPidFile:   config.ConmonPidFile,
-		PidFile:         config.PidFile,
 		Name:            config.Name,
 		RestartCount:    int32(runtimeInfo.RestartCount),
 		Driver:          driverData.Name,
@@ -162,7 +149,7 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 
 	if c.config.HealthCheckConfig != nil {
 		// This container has a healthcheck defined in it; we need to add it's state
-		healthCheckState, err := c.getHealthCheckLog()
+		healthCheckState, err := c.GetHealthCheckLog()
 		if err != nil {
 			// An error here is not considered fatal; no health state will be displayed
 			logrus.Error(err)
@@ -316,8 +303,6 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 		ctrConfig.WorkingDir = spec.Process.Cwd
 	}
 
-	ctrConfig.StopTimeout = c.config.StopTimeout
-	ctrConfig.Timeout = c.config.Timeout
 	ctrConfig.OpenStdin = c.config.Stdin
 	ctrConfig.Image = c.config.RootfsImageName
 	ctrConfig.SystemdMode = c.config.Systemd
@@ -355,13 +340,11 @@ func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.Insp
 	ctrConfig.CreateCommand = c.config.CreateCommand
 
 	ctrConfig.Timezone = c.config.Timezone
+
 	for _, secret := range c.config.Secrets {
 		newSec := define.InspectSecret{}
 		newSec.Name = secret.Name
 		newSec.ID = secret.ID
-		newSec.UID = secret.UID
-		newSec.GID = secret.GID
-		newSec.Mode = secret.Mode
 		ctrConfig.Secrets = append(ctrConfig.Secrets, &newSec)
 	}
 
@@ -630,13 +613,44 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 	hostConfig.Tmpfs = tmpfs
 
 	// Network mode parsing.
-	networkMode := c.NetworkMode()
+	networkMode := ""
+	switch {
+	case c.config.CreateNetNS:
+		// We actually store the network
+		// mode for Slirp and Bridge, so
+		// we can just use that
+		networkMode = string(c.config.NetMode)
+	case c.config.NetNsCtr != "":
+		networkMode = fmt.Sprintf("container:%s", c.config.NetNsCtr)
+	default:
+		// Find the spec's network namespace.
+		// If there is none, it's host networking.
+		// If there is one and it has a path, it's "ns:".
+		foundNetNS := false
+		for _, ns := range ctrSpec.Linux.Namespaces {
+			if ns.Type == spec.NetworkNamespace {
+				foundNetNS = true
+				if ns.Path != "" {
+					networkMode = fmt.Sprintf("ns:%s", ns.Path)
+				} else {
+					// We're making a network ns,  but not
+					// configuring with Slirp or CNI. That
+					// means it's --net=none
+					networkMode = "none"
+				}
+				break
+			}
+		}
+		if !foundNetNS {
+			networkMode = "host"
+		}
+	}
 	hostConfig.NetworkMode = networkMode
 
 	// Port bindings.
 	// Only populate if we're using CNI to configure the network.
 	if c.config.CreateNetNS {
-		hostConfig.PortBindings = makeInspectPortBindings(c.config.PortMappings, c.config.ExposedPorts)
+		hostConfig.PortBindings = makeInspectPortBindings(c.config.PortMappings)
 	} else {
 		hostConfig.PortBindings = make(map[string][]define.InspectHostPort)
 	}
@@ -872,27 +886,4 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 	hostConfig.ConsoleSize = []uint{0, 0}
 
 	return hostConfig, nil
-}
-
-// Return true if the container is running in the host's PID NS.
-func (c *Container) inHostPidNS() (bool, error) {
-	if c.config.PIDNsCtr != "" {
-		return false, nil
-	}
-	ctrSpec, err := c.specFromState()
-	if err != nil {
-		return false, err
-	}
-	if ctrSpec.Linux != nil {
-		// Locate the spec's PID namespace.
-		// If there is none, it's pid=host.
-		// If there is one and it has a path, it's "ns:".
-		// If there is no path, it's default - the empty string.
-		for _, ns := range ctrSpec.Linux.Namespaces {
-			if ns.Type == spec.PIDNamespace {
-				return false, nil
-			}
-		}
-	}
-	return true, nil
 }

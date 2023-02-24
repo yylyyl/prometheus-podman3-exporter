@@ -225,7 +225,7 @@ func addSubscriptionsFromMountsFile(filePath, mountLabel, containerWorkingDir st
 				logrus.Warnf("Path %q from %q doesn't exist, skipping", hostDirOrFile, filePath)
 				continue
 			}
-			return nil, err
+			return nil, errors.Wrapf(err, "failed to stat %q", hostDirOrFile)
 		}
 
 		ctrDirOrFileOnHost := filepath.Join(containerWorkingDir, ctrDirOrFile)
@@ -246,11 +246,11 @@ func addSubscriptionsFromMountsFile(filePath, mountLabel, containerWorkingDir st
 			switch mode := fileInfo.Mode(); {
 			case mode.IsDir():
 				if err = os.MkdirAll(ctrDirOrFileOnHost, mode.Perm()); err != nil {
-					return nil, errors.Wrap(err, "making container directory")
+					return nil, errors.Wrapf(err, "making container directory %q failed", ctrDirOrFileOnHost)
 				}
 				data, err := getHostSubscriptionData(hostDirOrFile, mode.Perm())
 				if err != nil {
-					return nil, errors.Wrap(err, "getting host subscription data")
+					return nil, errors.Wrapf(err, "getting host subscription data failed")
 				}
 				for _, s := range data {
 					if err := s.saveTo(ctrDirOrFileOnHost); err != nil {
@@ -260,7 +260,7 @@ func addSubscriptionsFromMountsFile(filePath, mountLabel, containerWorkingDir st
 			case mode.IsRegular():
 				data, err := readFileOrDir("", hostDirOrFile, mode.Perm())
 				if err != nil {
-					return nil, err
+					return nil, errors.Wrapf(err, "error reading file %q", hostDirOrFile)
 
 				}
 				for _, s := range data {
@@ -268,7 +268,7 @@ func addSubscriptionsFromMountsFile(filePath, mountLabel, containerWorkingDir st
 						return nil, err
 					}
 					if err := ioutil.WriteFile(ctrDirOrFileOnHost, s.data, s.mode); err != nil {
-						return nil, errors.Wrap(err, "saving data to container filesystem")
+						return nil, errors.Wrapf(err, "error saving data to container filesystem on host %q", ctrDirOrFileOnHost)
 					}
 				}
 			default:
@@ -285,7 +285,7 @@ func addSubscriptionsFromMountsFile(filePath, mountLabel, containerWorkingDir st
 				}
 			}
 		} else if err != nil {
-			return nil, err
+			return nil, errors.Wrapf(err, "error getting status of %q", ctrDirOrFileOnHost)
 		}
 
 		m := rspec.Mount{
@@ -309,10 +309,10 @@ func addFIPSModeSubscription(mounts *[]rspec.Mount, containerWorkingDir, mountPo
 	ctrDirOnHost := filepath.Join(containerWorkingDir, subscriptionsDir)
 	if _, err := os.Stat(ctrDirOnHost); os.IsNotExist(err) {
 		if err = idtools.MkdirAllAs(ctrDirOnHost, 0755, uid, gid); err != nil { //nolint
-			return err
+			return errors.Wrapf(err, "making container directory %q on host failed", ctrDirOnHost)
 		}
 		if err = label.Relabel(ctrDirOnHost, mountLabel, false); err != nil {
-			return errors.Wrapf(err, "applying correct labels on %q", ctrDirOnHost)
+			return errors.Wrapf(err, "error applying correct labels on %q", ctrDirOnHost)
 		}
 	}
 	fipsFile := filepath.Join(ctrDirOnHost, "system-fips")
@@ -320,7 +320,7 @@ func addFIPSModeSubscription(mounts *[]rspec.Mount, containerWorkingDir, mountPo
 	if _, err := os.Stat(fipsFile); os.IsNotExist(err) {
 		file, err := os.Create(fipsFile)
 		if err != nil {
-			return errors.Wrap(err, "creating system-fips file in container for FIPS mode")
+			return errors.Wrapf(err, "error creating system-fips file in container for FIPS mode")
 		}
 		defer file.Close()
 	}
@@ -342,7 +342,7 @@ func addFIPSModeSubscription(mounts *[]rspec.Mount, containerWorkingDir, mountPo
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return errors.Wrap(err, "FIPS Backend directory")
+		return errors.Wrapf(err, "failed to stat FIPS Backend directory %q", ctrDirOnHost)
 	}
 
 	if !mountExists(*mounts, destDir) {

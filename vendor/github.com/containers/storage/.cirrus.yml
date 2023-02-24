@@ -17,17 +17,19 @@ env:
     ####
     #### Cache-image names to test with (double-quotes around names are critical)
     ###
-    FEDORA_NAME: "fedora-34"
-    PRIOR_FEDORA_NAME: "fedora-33"
-    UBUNTU_NAME: "ubuntu-2104"
+    FEDORA_NAME: "fedora-33"
+    PRIOR_FEDORA_NAME: "fedora-32"
+    UBUNTU_NAME: "ubuntu-2010"
+    PRIOR_UBUNTU_NAME: "ubuntu-2004"
 
     # GCE project where images live
     IMAGE_PROJECT: "libpod-218412"
     # VM Image built in containers/automation_images
-    _BUILT_IMAGE_SUFFIX: "c6431352024203264"
+    _BUILT_IMAGE_SUFFIX: "c5744859501821952"
     FEDORA_CACHE_IMAGE_NAME: "fedora-${_BUILT_IMAGE_SUFFIX}"
     PRIOR_FEDORA_CACHE_IMAGE_NAME: "prior-fedora-${_BUILT_IMAGE_SUFFIX}"
     UBUNTU_CACHE_IMAGE_NAME: "ubuntu-${_BUILT_IMAGE_SUFFIX}"
+    PRIOR_UBUNTU_CACHE_IMAGE_NAME: "prior-ubuntu-${_BUILT_IMAGE_SUFFIX}"
 
     ####
     #### Command variables to help avoid duplication
@@ -110,7 +112,18 @@ ubuntu_testing_task: &ubuntu_testing
         - env:
             TEST_DRIVER: "vfs"
         - env:
+            TEST_DRIVER: "aufs"
+        - env:
             TEST_DRIVER: "overlay"
+
+
+prior_ubuntu_testing_task:
+    <<: *ubuntu_testing
+    alias: prior_ubuntu_testing
+    name: *std_test_name
+    env:
+        OS_NAME: "${PRIOR_UBUNTU_NAME}"
+        VM_IMAGE: "${PRIOR_UBUNTU_CACHE_IMAGE_NAME}"
 
 
 lint_task:
@@ -132,7 +145,7 @@ lint_task:
 meta_task:
 
     container:
-        image: "quay.io/libpod/imgts:${_BUILT_IMAGE_SUFFIX}"
+        image: "quay.io/libpod/imgts:master"
         cpu: 1
         memory: 1
 
@@ -142,6 +155,7 @@ meta_task:
             ${FEDORA_CACHE_IMAGE_NAME}
             ${PRIOR_FEDORA_CACHE_IMAGE_NAME}
             ${UBUNTU_CACHE_IMAGE_NAME}
+            ${PRIOR_UBUNTU_CACHE_IMAGE_NAME}
         BUILDID: "${CIRRUS_BUILD_ID}"
         REPOREF: "${CIRRUS_CHANGE_IN_REPO}"
         GCPJSON: ENCRYPTED[244a93fe8b386b48b96f748342bf741350e43805eee81dd04b45093bdf737e540b993fc735df41f131835fa0f9b65826]
@@ -169,6 +183,7 @@ success_task:
         - fedora_testing
         - prior_fedora_testing
         - ubuntu_testing
+        - prior_ubuntu_testing
         - meta
         - vendor
     container:

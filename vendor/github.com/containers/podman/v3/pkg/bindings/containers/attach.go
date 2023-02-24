@@ -25,12 +25,6 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-// The CloseWriter interface is used to determine whether we can do a  one-sided
-// close of a hijacked connection.
-type CloseWriter interface {
-	CloseWrite() error
-}
-
 // Attach attaches to a running container
 func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Writer, stderr io.Writer, attachReady chan bool, options *AttachOptions) error {
 	if options == nil {
@@ -134,9 +128,7 @@ func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Wri
 	if err != nil {
 		return err
 	}
-
 	if !(response.IsSuccess() || response.IsInformational()) {
-		defer response.Body.Close()
 		return response.Process(nil)
 	}
 
@@ -146,7 +138,7 @@ func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Wri
 		winCtx, winCancel := context.WithCancel(ctx)
 		defer winCancel()
 
-		attachHandleResize(ctx, winCtx, winChange, false, nameOrID, file)
+		go attachHandleResize(ctx, winCtx, winChange, false, nameOrID, file)
 	}
 
 	// If we are attaching around a start, we need to "signal"
@@ -157,22 +149,16 @@ func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Wri
 	}
 
 	stdoutChan := make(chan error)
-	stdinChan := make(chan error, 1) //stdin channel should not block
+	stdinChan := make(chan error)
 
 	if isSet.stdin {
 		go func() {
 			logrus.Debugf("Copying STDIN to socket")
 
 			_, err := utils.CopyDetachable(socket, stdin, detachKeysInBytes)
+
 			if err != nil && err != define.ErrDetach {
 				logrus.Error("failed to write input to service: " + err.Error())
-			}
-			if err == nil {
-				if closeWrite, ok := socket.(CloseWriter); ok {
-					if err := closeWrite.CloseWrite(); err != nil {
-						logrus.Warnf("Failed to close STDIN for writing: %v", err)
-					}
-				}
 			}
 			stdinChan <- err
 		}()
@@ -209,12 +195,12 @@ func Attach(ctx context.Context, nameOrID string, stdin io.Reader, stdout io.Wri
 			}
 		}
 	} else {
-		logrus.Debugf("Copying standard streams of container %q in non-terminal mode", ctnr.ID)
+		logrus.Debugf("Copying standard streams of container in non-terminal mode")
 		for {
 			// Read multiplexed channels and write to appropriate stream
 			fd, l, err := DemuxHeader(socket, buffer)
 			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
 				return err
@@ -326,8 +312,6 @@ func resizeTTY(ctx context.Context, endpoint string, height *int, width *int) er
 	if err != nil {
 		return err
 	}
-	defer rsp.Body.Close()
-
 	return rsp.Process(nil)
 }
 
@@ -343,38 +327,32 @@ func (f *rawFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	return append(buffer, '\r'), nil
 }
 
-// This is intended to not be run as a goroutine, handling resizing for a container
-// or exec session. It will call resize once and then starts a goroutine which calls resize on winChange
+// This is intended to be run as a goroutine, handling resizing for a container
+// or exec session.
 func attachHandleResize(ctx, winCtx context.Context, winChange chan os.Signal, isExec bool, id string, file *os.File) {
-	resize := func() {
-		w, h, err := terminal.GetSize(int(file.Fd()))
-		if err != nil {
-			logrus.Warnf("failed to obtain TTY size: %v", err)
-		}
+	// Prime the pump, we need one reset to ensure everything is ready
+	winChange <- sig.SIGWINCH
+	for {
+		select {
+		case <-winCtx.Done():
+			return
+		case <-winChange:
+			w, h, err := terminal.GetSize(int(file.Fd()))
+			if err != nil {
+				logrus.Warnf("failed to obtain TTY size: %v", err)
+			}
 
-		var resizeErr error
-		if isExec {
-			resizeErr = ResizeExecTTY(ctx, id, new(ResizeExecTTYOptions).WithHeight(h).WithWidth(w))
-		} else {
-			resizeErr = ResizeContainerTTY(ctx, id, new(ResizeTTYOptions).WithHeight(h).WithWidth(w))
-		}
-		if resizeErr != nil {
-			logrus.Infof("failed to resize TTY: %v", resizeErr)
-		}
-	}
-
-	resize()
-
-	go func() {
-		for {
-			select {
-			case <-winCtx.Done():
-				return
-			case <-winChange:
-				resize()
+			var resizeErr error
+			if isExec {
+				resizeErr = ResizeExecTTY(ctx, id, new(ResizeExecTTYOptions).WithHeight(h).WithWidth(w))
+			} else {
+				resizeErr = ResizeContainerTTY(ctx, id, new(ResizeTTYOptions).WithHeight(h).WithWidth(w))
+			}
+			if resizeErr != nil {
+				logrus.Warnf("failed to resize TTY: %v", resizeErr)
 			}
 		}
-	}()
+	}
 }
 
 // Configure the given terminal for raw mode
@@ -411,7 +389,6 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
 	respStruct := new(define.InspectExecSession)
 	if err := resp.Process(respStruct); err != nil {
@@ -425,17 +402,6 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 	// If we are in TTY mode, we need to set raw mode for the terminal.
 	// TODO: Share all of this with Attach() for containers.
 	needTTY := terminalFile != nil && terminal.IsTerminal(int(terminalFile.Fd())) && isTerm
-
-	body := struct {
-		Detach bool   `json:"Detach"`
-		TTY    bool   `json:"Tty"`
-		Height uint16 `json:"h"`
-		Width  uint16 `json:"w"`
-	}{
-		Detach: false,
-		TTY:    needTTY,
-	}
-
 	if needTTY {
 		state, err := setRawTerminal(terminalFile)
 		if err != nil {
@@ -447,14 +413,13 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 			}
 			logrus.SetFormatter(&logrus.TextFormatter{})
 		}()
-		w, h, err := terminal.GetSize(int(terminalFile.Fd()))
-		if err != nil {
-			logrus.Warnf("failed to obtain TTY size: %v", err)
-		}
-		body.Width = uint16(w)
-		body.Height = uint16(h)
 	}
 
+	body := struct {
+		Detach bool `json:"Detach"`
+	}{
+		Detach: false,
+	}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -482,8 +447,6 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	if !(response.IsSuccess() || response.IsInformational()) {
 		return response.Process(nil)
 	}
@@ -494,7 +457,7 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 		winCtx, winCancel := context.WithCancel(ctx)
 		defer winCancel()
 
-		attachHandleResize(ctx, winCtx, winChange, true, sessionID, terminalFile)
+		go attachHandleResize(ctx, winCtx, winChange, true, sessionID, terminalFile)
 	}
 
 	if options.GetAttachInput() {
@@ -503,13 +466,6 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 			_, err := utils.CopyDetachable(socket, options.InputStream, []byte{})
 			if err != nil {
 				logrus.Error("failed to write input to service: " + err.Error())
-			}
-
-			if closeWrite, ok := socket.(CloseWriter); ok {
-				logrus.Debugf("Closing STDIN")
-				if err := closeWrite.CloseWrite(); err != nil {
-					logrus.Warnf("Failed to close STDIN for writing: %v", err)
-				}
 			}
 		}()
 	}
@@ -531,7 +487,7 @@ func ExecStartAndAttach(ctx context.Context, sessionID string, options *ExecStar
 			// Read multiplexed channels and write to appropriate stream
 			fd, l, err := DemuxHeader(socket, buffer)
 			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
 				return err

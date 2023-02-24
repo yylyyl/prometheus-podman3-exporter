@@ -15,7 +15,7 @@ import (
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
 	"github.com/containers/buildah/copier"
-	butil "github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/libpod/events"
 	"github.com/containers/podman/v3/pkg/cgroups"
@@ -24,7 +24,6 @@ import (
 	"github.com/containers/podman/v3/pkg/hooks/exec"
 	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/podman/v3/pkg/selinux"
-	"github.com/containers/podman/v3/pkg/util"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/idtools"
@@ -36,14 +35,12 @@ import (
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 const (
 	// name of the directory holding the artifacts
 	artifactsDir      = "artifacts"
 	execDirPermission = 0755
-	preCheckpointDir  = "pre-checkpoint"
 )
 
 // rootFsSize gets the size of the container's root filesystem
@@ -143,7 +140,7 @@ func (c *Container) CheckpointPath() string {
 
 // PreCheckpointPath returns the path to the directory containing the pre-checkpoint-images
 func (c *Container) PreCheckPointPath() string {
-	return filepath.Join(c.bundlePath(), preCheckpointDir)
+	return filepath.Join(c.bundlePath(), "pre-checkpoint")
 }
 
 // AttachSocketPath retrieves the path of the container's attach socket
@@ -286,23 +283,6 @@ func (c *Container) handleRestartPolicy(ctx context.Context) (_ bool, retErr err
 		return false, err
 	}
 
-	// setup slirp4netns again because slirp4netns will die when conmon exits
-	if c.config.NetMode.IsSlirp4netns() {
-		err := c.runtime.setupSlirp4netns(c)
-		if err != nil {
-			return false, err
-		}
-	}
-
-	// setup rootlesskit port forwarder again since it dies when conmon exits
-	// we use rootlesskit port forwarder only as rootless and when bridge network is used
-	if rootless.IsRootless() && c.config.NetMode.IsBridge() && len(c.config.PortMappings) > 0 {
-		err := c.runtime.setupRootlessPortMappingViaRLK(c, c.state.NetNS.Path())
-		if err != nil {
-			return false, err
-		}
-	}
-
 	if c.state.State == define.ContainerStateStopped {
 		// Reinitialize the container if we need to
 		if err := c.reinit(ctx, true); err != nil {
@@ -377,12 +357,6 @@ func (c *Container) setupStorageMapping(dest, from *storage.IDMappingOptions) {
 		return
 	}
 	*dest = *from
-	// If we are creating a container inside a pod, we always want to inherit the
-	// userns settings from the infra container. So clear the auto userns settings
-	// so that we don't request storage for a new uid/gid map.
-	if c.PodID() != "" && !c.IsInfra() {
-		dest.AutoUserNs = false
-	}
 	if dest.AutoUserNs {
 		overrides := c.getUserOverrides()
 		dest.AutoUserNsOpts.PasswdFile = overrides.ContainerEtcPasswdPath
@@ -436,6 +410,7 @@ func (c *Container) setupStorage(ctx context.Context) error {
 	if c.config.Rootfs == "" && (c.config.RootfsImageID == "" || c.config.RootfsImageName == "") {
 		return errors.Wrapf(define.ErrInvalidArg, "must provide image ID and image name to use an image")
 	}
+
 	options := storage.ContainerOptions{
 		IDMappingOptions: storage.IDMappingOptions{
 			HostUIDMapping: true,
@@ -443,7 +418,7 @@ func (c *Container) setupStorage(ctx context.Context) error {
 		},
 		LabelOpts: c.config.LabelOpts,
 	}
-	if c.restoreFromCheckpoint && !c.config.Privileged {
+	if c.restoreFromCheckpoint {
 		// If restoring from a checkpoint, the root file-system
 		// needs to be mounted with the same SELinux labels as
 		// it was mounted previously.
@@ -476,40 +451,30 @@ func (c *Container) setupStorage(ctx context.Context) error {
 		options.MountOpts = newOptions
 	}
 
-	options.Volatile = c.config.Volatile
-
 	c.setupStorageMapping(&options.IDMappingOptions, &c.config.IDMappings)
 
-	// Unless the user has specified a name, use a randomly generated one.
-	// Note that name conflicts may occur (see #11735), so we need to loop.
-	generateName := c.config.Name == ""
-	var containerInfo ContainerInfo
-	var containerInfoErr error
-	for {
-		if generateName {
-			name, err := c.runtime.generateName()
-			if err != nil {
-				return err
-			}
-			c.config.Name = name
-		}
-		containerInfo, containerInfoErr = c.runtime.storageService.CreateContainerStorage(ctx, c.runtime.imageContext, c.config.RootfsImageName, c.config.RootfsImageID, c.config.Name, c.config.ID, options)
-
-		if !generateName || errors.Cause(containerInfoErr) != storage.ErrDuplicateName {
-			break
-		}
-	}
-	if containerInfoErr != nil {
-		return errors.Wrapf(containerInfoErr, "error creating container storage")
+	containerInfo, err := c.runtime.storageService.CreateContainerStorage(ctx, c.runtime.imageContext, c.config.RootfsImageName, c.config.RootfsImageID, c.config.Name, c.config.ID, options)
+	if err != nil {
+		return errors.Wrapf(err, "error creating container storage")
 	}
 
 	c.config.IDMappings.UIDMap = containerInfo.UIDMap
 	c.config.IDMappings.GIDMap = containerInfo.GIDMap
 
-	processLabel, err := c.processLabel(containerInfo.ProcessLabel)
-	if err != nil {
-		return err
+	processLabel := containerInfo.ProcessLabel
+	switch {
+	case c.ociRuntime.SupportsKVM():
+		processLabel, err = selinux.KVMLabel(processLabel)
+		if err != nil {
+			return err
+		}
+	case c.config.Systemd:
+		processLabel, err = selinux.InitLabel(processLabel)
+		if err != nil {
+			return err
+		}
 	}
+
 	c.config.ProcessLabel = processLabel
 	c.config.MountLabel = containerInfo.MountLabel
 	c.config.StaticDir = containerInfo.Dir
@@ -542,26 +507,6 @@ func (c *Container) setupStorage(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (c *Container) processLabel(processLabel string) (string, error) {
-	if !c.config.Systemd && !c.ociRuntime.SupportsKVM() {
-		return processLabel, nil
-	}
-	ctrSpec, err := c.specFromState()
-	if err != nil {
-		return "", err
-	}
-	label, ok := ctrSpec.Annotations[define.InspectAnnotationLabel]
-	if !ok || !strings.Contains(label, "type:") {
-		switch {
-		case c.ociRuntime.SupportsKVM():
-			return selinux.KVMLabel(processLabel)
-		case c.config.Systemd:
-			return selinux.InitLabel(processLabel)
-		}
-	}
-	return processLabel, nil
 }
 
 // Tear down a container's storage prior to removal
@@ -612,7 +557,6 @@ func resetState(state *ContainerState) {
 	state.StoppedByUser = false
 	state.RestartPolicyMatch = false
 	state.RestartCount = 0
-	state.Checkpointed = false
 }
 
 // Refresh refreshes the container's state after a restart.
@@ -741,11 +685,7 @@ func (c *Container) removeIPv4Allocations() error {
 // This is necessary for restarting containers
 func (c *Container) removeConmonFiles() error {
 	// Files are allowed to not exist, so ignore ENOENT
-	attachFile, err := c.AttachSocketPath()
-	if err != nil {
-		return errors.Wrapf(err, "failed to get attach socket path for container %s", c.ID())
-	}
-
+	attachFile := filepath.Join(c.bundlePath(), "attach")
 	if err := os.Remove(attachFile); err != nil && !os.IsNotExist(err) {
 		return errors.Wrapf(err, "error removing container %s attach file", c.ID())
 	}
@@ -1005,7 +945,7 @@ func (c *Container) checkDependenciesRunning() ([]string, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "error retrieving state of dependency %s of container %s", dep, c.ID())
 		}
-		if state != define.ContainerStateRunning && !depCtr.config.IsInfra {
+		if state != define.ContainerStateRunning {
 			notRunning = append(notRunning, dep)
 		}
 		depCtrs[dep] = depCtr
@@ -1026,7 +966,9 @@ func (c *Container) completeNetworkSetup() error {
 	if err := c.syncContainer(); err != nil {
 		return err
 	}
-	if c.config.NetMode.IsSlirp4netns() {
+	if rootless.IsRootless() {
+		return c.runtime.setupRootlessNetNS(c)
+	} else if c.config.NetMode.IsSlirp4netns() {
 		return c.runtime.setupSlirp4netns(c)
 	}
 	if err := c.runtime.setupNetNS(c); err != nil {
@@ -1081,7 +1023,7 @@ func (c *Container) cniHosts() string {
 	var hosts string
 	if len(c.state.NetworkStatus) > 0 && len(c.state.NetworkStatus[0].IPs) > 0 {
 		ipAddress := strings.Split(c.state.NetworkStatus[0].IPs[0].Address.String(), "/")[0]
-		hosts += fmt.Sprintf("%s\t%s %s\n", ipAddress, c.Hostname(), c.config.Name)
+		hosts += fmt.Sprintf("%s\t%s %s\n", ipAddress, c.Hostname(), c.Config().Name)
 	}
 	return hosts
 }
@@ -1100,18 +1042,13 @@ func (c *Container) init(ctx context.Context, retainRetries bool) error {
 		return err
 	}
 
-	// Make sure the workdir exists while initializing container
-	if err := c.resolveWorkDir(); err != nil {
-		return err
-	}
-
 	// Save the OCI newSpec to disk
 	if err := c.saveSpec(newSpec); err != nil {
 		return err
 	}
 
 	for _, v := range c.config.NamedVolumes {
-		if err := c.fixVolumePermissions(v); err != nil {
+		if err := c.chownVolume(v.Name); err != nil {
 			return err
 		}
 	}
@@ -1138,7 +1075,6 @@ func (c *Container) init(ctx context.Context, retainRetries bool) error {
 		c.state.ExecSessions = make(map[string]*ExecSession)
 	}
 
-	c.state.Checkpointed = false
 	c.state.ExitCode = 0
 	c.state.Exited = false
 	c.state.State = define.ContainerStateCreated
@@ -1375,7 +1311,7 @@ func (c *Container) stop(timeout uint) error {
 	}
 
 	// We have to check stopErr *after* we lock again - otherwise, we have a
-	// change of panicking on a double-unlock. Ref: GH Issue 9615
+	// change of panicing on a double-unlock. Ref: GH Issue 9615
 	if stopErr != nil {
 		return stopErr
 	}
@@ -1582,51 +1518,6 @@ func (c *Container) mountStorage() (_ string, deferredErr error) {
 		}()
 	}
 
-	rootUID, rootGID := c.RootUID(), c.RootGID()
-
-	dirfd, err := unix.Open(mountPoint, unix.O_RDONLY|unix.O_PATH, 0)
-	if err != nil {
-		return "", errors.Wrap(err, "open mount point")
-	}
-	defer unix.Close(dirfd)
-
-	err = unix.Mkdirat(dirfd, "etc", 0755)
-	if err != nil && !os.IsExist(err) {
-		return "", errors.Wrap(err, "create /etc")
-	}
-	// If the etc directory was created, chown it to root in the container
-	if err == nil && (rootUID != 0 || rootGID != 0) {
-		err = unix.Fchownat(dirfd, "etc", rootUID, rootGID, unix.AT_SYMLINK_NOFOLLOW)
-		if err != nil {
-			return "", errors.Wrap(err, "chown /etc")
-		}
-	}
-
-	etcInTheContainerPath, err := securejoin.SecureJoin(mountPoint, "etc")
-	if err != nil {
-		return "", errors.Wrap(err, "resolve /etc in the container")
-	}
-
-	etcInTheContainerFd, err := unix.Open(etcInTheContainerPath, unix.O_RDONLY|unix.O_PATH, 0)
-	if err != nil {
-		return "", errors.Wrap(err, "open /etc in the container")
-	}
-	defer unix.Close(etcInTheContainerFd)
-
-	// If /etc/mtab does not exist in container image, then we need to
-	// create it, so that mount command within the container will work.
-	err = unix.Symlinkat("/proc/mounts", etcInTheContainerFd, "mtab")
-	if err != nil && !os.IsExist(err) {
-		return "", errors.Wrap(err, "creating /etc/mtab symlink")
-	}
-	// If the symlink was created, then also chown it to root in the container
-	if err == nil && (rootUID != 0 || rootGID != 0) {
-		err = unix.Fchownat(etcInTheContainerFd, "mtab", rootUID, rootGID, unix.AT_SYMLINK_NOFOLLOW)
-		if err != nil {
-			return "", errors.Wrap(err, "chown /etc/mtab")
-		}
-	}
-
 	// Request a mount of all named volumes
 	for _, v := range c.config.NamedVolumes {
 		vol, err := c.mountNamedVolume(v, mountPoint)
@@ -1766,6 +1657,64 @@ func (c *Container) mountNamedVolume(v *ContainerNamedVolume, mountpoint string)
 	return vol, nil
 }
 
+// Chown the specified volume if necessary.
+func (c *Container) chownVolume(volumeName string) error {
+	vol, err := c.runtime.state.Volume(volumeName)
+	if err != nil {
+		return errors.Wrapf(err, "error retrieving named volume %s for container %s", volumeName, c.ID())
+	}
+
+	vol.lock.Lock()
+	defer vol.lock.Unlock()
+
+	// The volume may need a copy-up. Check the state.
+	if err := vol.update(); err != nil {
+		return err
+	}
+
+	// TODO: For now, I've disabled chowning volumes owned by non-Podman
+	// drivers. This may be safe, but it's really going to be a case-by-case
+	// thing, I think - safest to leave disabled now and reenable later if
+	// there is a demand.
+	if vol.state.NeedsChown && !vol.UsesVolumeDriver() {
+		vol.state.NeedsChown = false
+
+		uid := int(c.config.Spec.Process.User.UID)
+		gid := int(c.config.Spec.Process.User.GID)
+
+		if c.config.IDMappings.UIDMap != nil {
+			p := idtools.IDPair{
+				UID: uid,
+				GID: gid,
+			}
+			mappings := idtools.NewIDMappingsFromMaps(c.config.IDMappings.UIDMap, c.config.IDMappings.GIDMap)
+			newPair, err := mappings.ToHost(p)
+			if err != nil {
+				return errors.Wrapf(err, "error mapping user %d:%d", uid, gid)
+			}
+			uid = newPair.UID
+			gid = newPair.GID
+		}
+
+		vol.state.UIDChowned = uid
+		vol.state.GIDChowned = gid
+
+		if err := vol.save(); err != nil {
+			return err
+		}
+
+		mountPoint, err := vol.MountPoint()
+		if err != nil {
+			return err
+		}
+
+		if err := os.Lchown(mountPoint, uid, gid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // cleanupStorage unmounts and cleans up the container's root filesystem
 func (c *Container) cleanupStorage() error {
 	if !c.state.Mounted {
@@ -1891,7 +1840,7 @@ func (c *Container) cleanup(ctx context.Context) error {
 
 	// Unmount image volumes
 	for _, v := range c.config.ImageVolumes {
-		img, _, err := c.runtime.LibimageRuntime().LookupImage(v.Source, nil)
+		img, err := c.runtime.ImageRuntime().NewFromLocal(v.Source)
 		if err != nil {
 			if lastError == nil {
 				lastError = err
@@ -2154,7 +2103,7 @@ func (c *Container) checkReadyForRemoval() error {
 		return errors.Wrapf(define.ErrCtrStateInvalid, "container %s is in invalid state", c.ID())
 	}
 
-	if c.ensureState(define.ContainerStateRunning, define.ContainerStatePaused) && !c.IsInfra() {
+	if c.ensureState(define.ContainerStateRunning, define.ContainerStatePaused) {
 		return errors.Wrapf(define.ErrCtrStateInvalid, "cannot remove container %s as it is %s - running or paused containers cannot be removed without force", c.ID(), c.state.State.String())
 	}
 
@@ -2180,7 +2129,7 @@ func (c *Container) canWithPrevious() error {
 // JSON files for later export
 func (c *Container) prepareCheckpointExport() error {
 	// save live config
-	if _, err := metadata.WriteJSONFile(c.config, c.bundlePath(), metadata.ConfigDumpFile); err != nil {
+	if _, err := metadata.WriteJSONFile(c.Config(), c.bundlePath(), metadata.ConfigDumpFile); err != nil {
 		return err
 	}
 
@@ -2274,30 +2223,20 @@ func (c *Container) hasNamespace(namespace spec.LinuxNamespaceType) bool {
 }
 
 // extractSecretToStorage copies a secret's data from the secrets manager to the container's static dir
-func (c *Container) extractSecretToCtrStorage(secr *ContainerSecret) error {
-	manager, err := c.runtime.SecretsManager()
+func (c *Container) extractSecretToCtrStorage(name string) error {
+	manager, err := secrets.NewManager(c.runtime.GetSecretsStorageDir())
 	if err != nil {
 		return err
 	}
-	_, data, err := manager.LookupSecretData(secr.Name)
+	secr, data, err := manager.LookupSecretData(name)
 	if err != nil {
 		return err
 	}
 	secretFile := filepath.Join(c.config.SecretsPath, secr.Name)
 
-	hostUID, hostGID, err := butil.GetHostIDs(util.IDtoolsToRuntimeSpec(c.config.IDMappings.UIDMap), util.IDtoolsToRuntimeSpec(c.config.IDMappings.GIDMap), secr.UID, secr.GID)
-	if err != nil {
-		return errors.Wrap(err, "unable to extract secret")
-	}
 	err = ioutil.WriteFile(secretFile, data, 0644)
 	if err != nil {
 		return errors.Wrapf(err, "unable to create %s", secretFile)
-	}
-	if err := os.Lchown(secretFile, int(hostUID), int(hostGID)); err != nil {
-		return err
-	}
-	if err := os.Chmod(secretFile, os.FileMode(secr.Mode)); err != nil {
-		return err
 	}
 	if err := label.Relabel(secretFile, c.config.MountLabel, false); err != nil {
 		return err

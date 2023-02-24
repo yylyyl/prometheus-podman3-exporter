@@ -127,8 +127,6 @@ const (
 	Create Status = "create"
 	// Exec ...
 	Exec Status = "exec"
-	// ExecDied indicates that an exec session in a container died.
-	ExecDied Status = "exec_died"
 	// Exited indicates that a container's process died
 	Exited Status = "died"
 	// Export ...

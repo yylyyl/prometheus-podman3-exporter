@@ -70,11 +70,18 @@ func GetContainerLists(runtime *libpod.Runtime, options entities.ContainerListOp
 	}
 
 	if options.All && options.External {
-		listCon, err := GetExternalContainerLists(runtime)
+		externCons, err := runtime.StorageContainers()
 		if err != nil {
 			return nil, err
 		}
-		pss = append(pss, listCon...)
+
+		for _, con := range externCons {
+			listCon, err := ListStorageContainer(runtime, con, options)
+			if err != nil {
+				return nil, err
+			}
+			pss = append(pss, listCon)
+		}
 	}
 
 	// Sort the containers we got
@@ -85,27 +92,6 @@ func GetContainerLists(runtime *libpod.Runtime, options entities.ContainerListOp
 		if options.Last < len(pss) {
 			pss = pss[:options.Last]
 		}
-	}
-	return pss, nil
-}
-
-// GetExternalContainerLists returns list of external containers for e.g created by buildah
-func GetExternalContainerLists(runtime *libpod.Runtime) ([]entities.ListContainer, error) {
-	var (
-		pss = []entities.ListContainer{}
-	)
-
-	externCons, err := runtime.StorageContainers()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, con := range externCons {
-		listCon, err := ListStorageContainer(runtime, con)
-		if err != nil {
-			return nil, err
-		}
-		pss = append(pss, listCon)
 	}
 	return pss, nil
 }
@@ -127,12 +113,6 @@ func ListContainerBatch(rt *libpod.Runtime, ctr *libpod.Container, opts entities
 	)
 
 	batchErr := ctr.Batch(func(c *libpod.Container) error {
-		if opts.Sync {
-			if err := c.Sync(); err != nil {
-				return errors.Wrapf(err, "unable to update container state from OCI runtime")
-			}
-		}
-
 		conConfig = c.Config()
 		conState, err = c.State()
 		if err != nil {
@@ -247,17 +227,10 @@ func ListContainerBatch(rt *libpod.Runtime, ctr *libpod.Container, opts entities
 			UTS:    uts,
 		}
 	}
-
-	if hc, err := ctr.HealthCheckStatus(); err == nil {
-		ps.Status = hc
-	} else {
-		logrus.Debug(err)
-	}
-
 	return ps, nil
 }
 
-func ListStorageContainer(rt *libpod.Runtime, ctr storage.Container) (entities.ListContainer, error) {
+func ListStorageContainer(rt *libpod.Runtime, ctr storage.Container, opts entities.ContainerListOptions) (entities.ListContainer, error) {
 	name := "unknown"
 	if len(ctr.Names) > 0 {
 		name = ctr.Names[0]
@@ -284,12 +257,12 @@ func ListStorageContainer(rt *libpod.Runtime, ctr storage.Container) (entities.L
 
 	imageName := ""
 	if ctr.ImageID != "" {
-		image, _, err := rt.LibimageRuntime().LookupImage(ctr.ImageID, nil)
+		names, err := rt.ImageRuntime().ImageNames(ctr.ImageID)
 		if err != nil {
 			return ps, err
 		}
-		if len(image.NamesHistory()) > 0 {
-			imageName = image.NamesHistory()[0]
+		if len(names) > 0 {
+			imageName = names[0]
 		}
 	} else if buildahCtr {
 		imageName = "scratch"

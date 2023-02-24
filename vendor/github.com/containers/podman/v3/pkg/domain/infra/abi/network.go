@@ -11,7 +11,7 @@ import (
 )
 
 func (ic *ContainerEngine) NetworkList(ctx context.Context, options entities.NetworkListOptions) ([]*entities.NetworkListReport, error) {
-	reports := make([]*entities.NetworkListReport, 0)
+	var reports []*entities.NetworkListReport
 
 	config, err := ic.Libpod.GetConfig()
 	if err != nil {
@@ -71,9 +71,7 @@ func (ic *ContainerEngine) NetworkReload(ctx context.Context, names []string, op
 		report := new(entities.NetworkReloadReport)
 		report.Id = ctr.ID()
 		report.Err = ctr.ReloadNetwork()
-		// ignore errors for invalid ctr state and network mode when --all is used
-		if options.All && (errors.Cause(report.Err) == define.ErrCtrStateInvalid ||
-			errors.Cause(report.Err) == define.ErrNetworkModeInvalid) {
+		if options.All && errors.Cause(report.Err) == define.ErrCtrStateInvalid {
 			continue
 		}
 		reports = append(reports, report)

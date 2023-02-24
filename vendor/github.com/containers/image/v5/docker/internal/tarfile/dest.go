@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/ioutil"
+	"os"
 
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/internal/iolimits"
-	"github.com/containers/image/v5/internal/streamdigest"
+	"github.com/containers/image/v5/internal/tmpdir"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
@@ -84,7 +86,7 @@ func (d *Destination) HasThreadSafePutBlob() bool {
 }
 
 // PutBlob writes contents of stream and returns data representing the result (with all data filled in).
-// inputInfo.Digest can be optionally provided if known; if provided, and stream is read to the end without error, the digest MUST match the stream contents.
+// inputInfo.Digest can be optionally provided if known; it is not mandatory for the implementation to verify it.
 // inputInfo.Size is the expected length of stream, if known.
 // May update cache.
 // WARNING: The contents of stream are being verified on the fly.  Until stream.Read() returns io.EOF, the contents of the data SHOULD NOT be available
@@ -93,13 +95,30 @@ func (d *Destination) HasThreadSafePutBlob() bool {
 func (d *Destination) PutBlob(ctx context.Context, stream io.Reader, inputInfo types.BlobInfo, cache types.BlobInfoCache, isConfig bool) (types.BlobInfo, error) {
 	// Ouch, we need to stream the blob into a temporary file just to determine the size.
 	// When the layer is decompressed, we also have to generate the digest on uncompressed data.
-	if inputInfo.Size == -1 || inputInfo.Digest == "" {
+	if inputInfo.Size == -1 || inputInfo.Digest.String() == "" {
 		logrus.Debugf("docker tarfile: input with unknown size, streaming to disk first ...")
-		streamCopy, cleanup, err := streamdigest.ComputeBlobInfo(d.sysCtx, stream, &inputInfo)
+		streamCopy, err := ioutil.TempFile(tmpdir.TemporaryDirectoryForBigFiles(d.sysCtx), "docker-tarfile-blob")
 		if err != nil {
 			return types.BlobInfo{}, err
 		}
-		defer cleanup()
+		defer os.Remove(streamCopy.Name())
+		defer streamCopy.Close()
+
+		digester := digest.Canonical.Digester()
+		tee := io.TeeReader(stream, digester.Hash())
+		// TODO: This can take quite some time, and should ideally be cancellable using ctx.Done().
+		size, err := io.Copy(streamCopy, tee)
+		if err != nil {
+			return types.BlobInfo{}, err
+		}
+		_, err = streamCopy.Seek(0, io.SeekStart)
+		if err != nil {
+			return types.BlobInfo{}, err
+		}
+		inputInfo.Size = size // inputInfo is a struct, so we are only modifying our copy.
+		if inputInfo.Digest == "" {
+			inputInfo.Digest = digester.Digest()
+		}
 		stream = streamCopy
 		logrus.Debugf("... streaming done")
 	}
@@ -121,11 +140,11 @@ func (d *Destination) PutBlob(ctx context.Context, stream io.Reader, inputInfo t
 	if isConfig {
 		buf, err := iolimits.ReadAtMost(stream, iolimits.MaxConfigBodySize)
 		if err != nil {
-			return types.BlobInfo{}, errors.Wrap(err, "reading Config file stream")
+			return types.BlobInfo{}, errors.Wrap(err, "Error reading Config file stream")
 		}
 		d.config = buf
 		if err := d.archive.sendFileLocked(d.archive.configPath(inputInfo.Digest), inputInfo.Size, bytes.NewReader(buf)); err != nil {
-			return types.BlobInfo{}, errors.Wrap(err, "writing Config file")
+			return types.BlobInfo{}, errors.Wrap(err, "Error writing Config file")
 		}
 	} else {
 		if err := d.archive.sendFileLocked(d.archive.physicalLayerPath(inputInfo.Digest), inputInfo.Size, stream); err != nil {
@@ -168,7 +187,7 @@ func (d *Destination) PutManifest(ctx context.Context, m []byte, instanceDigest 
 	// so the caller trying a different manifest kind would be pointless.
 	var man manifest.Schema2
 	if err := json.Unmarshal(m, &man); err != nil {
-		return errors.Wrap(err, "parsing manifest")
+		return errors.Wrap(err, "Error parsing manifest")
 	}
 	if man.SchemaVersion != 2 || man.MediaType != manifest.DockerV2Schema2MediaType {
 		return errors.Errorf("Unsupported manifest type, need a Docker schema 2 manifest")

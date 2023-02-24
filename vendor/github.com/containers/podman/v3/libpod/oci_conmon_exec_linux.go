@@ -25,7 +25,7 @@ import (
 )
 
 // ExecContainer executes a command in a running container
-func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams, newSize *define.TerminalSize) (int, chan error, error) {
+func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams) (int, chan error, error) {
 	if options == nil {
 		return -1, nil, errors.Wrapf(define.ErrInvalidArg, "must provide an ExecOptions struct to ExecContainer")
 	}
@@ -68,7 +68,7 @@ func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options
 	attachChan := make(chan error)
 	go func() {
 		// attachToExec is responsible for closing pipes
-		attachChan <- c.attachToExec(streams, options.DetachKeys, sessionID, pipes.startPipe, pipes.attachPipe, newSize)
+		attachChan <- c.attachToExec(streams, options.DetachKeys, sessionID, pipes.startPipe, pipes.attachPipe)
 		close(attachChan)
 	}()
 
@@ -83,8 +83,7 @@ func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options
 
 // ExecContainerHTTP executes a new command in an existing container and
 // forwards its standard streams over an attach
-func (r *ConmonOCIRuntime) ExecContainerHTTP(ctr *Container, sessionID string, options *ExecOptions, req *http.Request, w http.ResponseWriter,
-	streams *HTTPAttachStreams, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool, newSize *define.TerminalSize) (int, chan error, error) {
+func (r *ConmonOCIRuntime) ExecContainerHTTP(ctr *Container, sessionID string, options *ExecOptions, req *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool) (int, chan error, error) {
 	if streams != nil {
 		if !streams.Stdin && !streams.Stdout && !streams.Stderr {
 			return -1, nil, errors.Wrapf(define.ErrInvalidArg, "must provide at least one stream to attach to")
@@ -134,7 +133,7 @@ func (r *ConmonOCIRuntime) ExecContainerHTTP(ctr *Container, sessionID string, o
 	conmonPipeDataChan := make(chan conmonPipeData)
 	go func() {
 		// attachToExec is responsible for closing pipes
-		attachChan <- attachExecHTTP(ctr, sessionID, req, w, streams, pipes, detachKeys, options.Terminal, cancel, hijackDone, holdConnOpen, execCmd, conmonPipeDataChan, ociLog, newSize)
+		attachChan <- attachExecHTTP(ctr, sessionID, req, w, streams, pipes, detachKeys, options.Terminal, cancel, hijackDone, holdConnOpen, execCmd, conmonPipeDataChan, ociLog)
 		close(attachChan)
 	}()
 
@@ -285,6 +284,17 @@ func (r *ConmonOCIRuntime) ExecUpdateStatus(ctr *Container, sessionID string) (b
 	return true, nil
 }
 
+// ExecContainerCleanup cleans up files created when a command is run via
+// ExecContainer. This includes the attach socket for the exec session.
+func (r *ConmonOCIRuntime) ExecContainerCleanup(ctr *Container, sessionID string) error {
+	// Clean up the sockets dir. Issue #3962
+	// Also ignore if it doesn't exist for some reason; hence the conditional return below
+	if err := os.RemoveAll(filepath.Join(r.socketsDir, sessionID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // ExecAttachSocketPath is the path to a container's exec session attach socket.
 func (r *ConmonOCIRuntime) ExecAttachSocketPath(ctr *Container, sessionID string) (string, error) {
 	// We don't even use container, so don't validity check it
@@ -292,7 +302,7 @@ func (r *ConmonOCIRuntime) ExecAttachSocketPath(ctr *Container, sessionID string
 		return "", errors.Wrapf(define.ErrInvalidArg, "must provide a valid session ID to get attach socket path")
 	}
 
-	return filepath.Join(ctr.execBundlePath(sessionID), "attach"), nil
+	return filepath.Join(r.socketsDir, sessionID, "attach"), nil
 }
 
 // This contains pipes used by the exec API.
@@ -438,7 +448,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	// 	}
 	// }
 
-	conmonEnv := r.configureConmonEnv(c, runtimeDir)
+	conmonEnv, extraFiles := r.configureConmonEnv(c, runtimeDir)
 
 	var filesToClose []*os.File
 	if options.PreserveFDs > 0 {
@@ -456,12 +466,13 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	execCmd.Env = append(execCmd.Env, conmonEnv...)
 
 	execCmd.ExtraFiles = append(execCmd.ExtraFiles, childSyncPipe, childStartPipe, childAttachPipe)
+	execCmd.ExtraFiles = append(execCmd.ExtraFiles, extraFiles...)
 	execCmd.Dir = c.execBundlePath(sessionID)
 	execCmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
 
-	err = startCommandGivenSelinux(execCmd, c)
+	err = startCommandGivenSelinux(execCmd)
 
 	// We don't need children pipes  on the parent side
 	errorhandling.CloseQuiet(childSyncPipe)
@@ -486,7 +497,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 }
 
 // Attach to a container over HTTP
-func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, pipes *execPipes, detachKeys []byte, isTerminal bool, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool, execCmd *exec.Cmd, conmonPipeDataChan chan<- conmonPipeData, ociLog string, newSize *define.TerminalSize) (deferredErr error) {
+func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, pipes *execPipes, detachKeys []byte, isTerminal bool, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool, execCmd *exec.Cmd, conmonPipeDataChan chan<- conmonPipeData, ociLog string) (deferredErr error) {
 	// NOTE: As you may notice, the attach code is quite complex.
 	// Many things happen concurrently and yet are interdependent.
 	// If you ever change this function, make sure to write to the
@@ -522,14 +533,6 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 	if _, err := readConmonPipeData(pipes.attachPipe, ""); err != nil {
 		conmonPipeDataChan <- conmonPipeData{-1, err}
 		return err
-	}
-
-	// resize before we start the container process
-	if newSize != nil {
-		err = c.ociRuntime.ExecAttachResize(c, sessionID, *newSize)
-		if err != nil {
-			logrus.Warn("resize failed", err)
-		}
 	}
 
 	// 2: then attach
@@ -651,10 +654,6 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 			if err != nil {
 				return err
 			}
-			// copy stdin is done, close it
-			if connErr := conn.CloseWrite(); connErr != nil {
-				logrus.Errorf("Unable to close conn: %v", connErr)
-			}
 		case <-cancel:
 			return nil
 		}
@@ -683,19 +682,6 @@ func prepareProcessExec(c *Container, options *ExecOptions, env []string, sessio
 	}
 	if len(env) > 0 {
 		pspec.Env = append(pspec.Env, env...)
-	}
-
-	// Add secret envs if they exist
-	manager, err := c.runtime.SecretsManager()
-	if err != nil {
-		return nil, err
-	}
-	for name, secr := range c.config.EnvSecrets {
-		_, data, err := manager.LookupSecretData(secr.Name)
-		if err != nil {
-			return nil, err
-		}
-		pspec.Env = append(pspec.Env, fmt.Sprintf("%s=%s", name, string(data)))
 	}
 
 	if options.Cwd != "" {
@@ -757,14 +743,11 @@ func prepareProcessExec(c *Container, options *ExecOptions, env []string, sessio
 	} else {
 		pspec.Capabilities.Bounding = ctrSpec.Process.Capabilities.Bounding
 	}
-
-	// Always unset the inheritable capabilities similarly to what the Linux kernel does
-	// They are used only when using capabilities with uid != 0.
-	pspec.Capabilities.Inheritable = []string{}
-
 	if execUser.Uid == 0 {
 		pspec.Capabilities.Effective = pspec.Capabilities.Bounding
+		pspec.Capabilities.Inheritable = pspec.Capabilities.Bounding
 		pspec.Capabilities.Permitted = pspec.Capabilities.Bounding
+		pspec.Capabilities.Ambient = pspec.Capabilities.Bounding
 	} else {
 		if user == c.config.User {
 			pspec.Capabilities.Effective = ctrSpec.Process.Capabilities.Effective

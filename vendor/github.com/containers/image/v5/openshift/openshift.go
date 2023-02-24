@@ -79,10 +79,11 @@ func (c *openshiftClient) doRequest(ctx context.Context, method, path string, re
 		logrus.Debugf("Will send body: %s", requestBody)
 		requestBodyReader = bytes.NewReader(requestBody)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url.String(), requestBodyReader)
+	req, err := http.NewRequest(method, url.String(), requestBodyReader)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(ctx)
 
 	if len(c.bearerToken) != 0 {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
@@ -136,7 +137,7 @@ func (c *openshiftClient) doRequest(ctx context.Context, method, path string, re
 func (c *openshiftClient) getImage(ctx context.Context, imageStreamImageName string) (*image, error) {
 	// FIXME: validate components per validation.IsValidPathSegmentName?
 	path := fmt.Sprintf("/oapi/v1/namespaces/%s/imagestreamimages/%s@%s", c.ref.namespace, c.ref.stream, imageStreamImageName)
-	body, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	body, err := c.doRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +164,7 @@ type openshiftImageSource struct {
 	// Values specific to this image
 	sys *types.SystemContext
 	// State
-	docker               types.ImageSource // The docker/distribution API endpoint, or nil if not resolved yet
+	docker               types.ImageSource // The Docker Registry endpoint, or nil if not resolved yet
 	imageStreamImageName string            // Resolved image identifier, or "" if not known yet
 }
 
@@ -272,7 +273,7 @@ func (s *openshiftImageSource) ensureImageIsResolved(ctx context.Context) error 
 
 	// FIXME: validate components per validation.IsValidPathSegmentName?
 	path := fmt.Sprintf("/oapi/v1/namespaces/%s/imagestreams/%s", s.client.ref.namespace, s.client.ref.stream)
-	body, err := s.client.doRequest(ctx, http.MethodGet, path, nil)
+	body, err := s.client.doRequest(ctx, "GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -315,7 +316,7 @@ func (s *openshiftImageSource) ensureImageIsResolved(ctx context.Context) error 
 
 type openshiftImageDestination struct {
 	client *openshiftClient
-	docker types.ImageDestination // The docker/distribution API endpoint
+	docker types.ImageDestination // The Docker Registry endpoint
 	// State
 	imageStreamImageName string // "" if not yet known
 }
@@ -395,7 +396,7 @@ func (d *openshiftImageDestination) HasThreadSafePutBlob() bool {
 }
 
 // PutBlob writes contents of stream and returns data representing the result (with all data filled in).
-// inputInfo.Digest can be optionally provided if known; if provided, and stream is read to the end without error, the digest MUST match the stream contents.
+// inputInfo.Digest can be optionally provided if known; it is not mandatory for the implementation to verify it.
 // inputInfo.Size is the expected length of stream, if known.
 // May update cache.
 // WARNING: The contents of stream are being verified on the fly.  Until stream.Read() returns io.EOF, the contents of the data SHOULD NOT be available
@@ -434,14 +435,14 @@ func (d *openshiftImageDestination) PutManifest(ctx context.Context, m []byte, i
 }
 
 func (d *openshiftImageDestination) PutSignatures(ctx context.Context, signatures [][]byte, instanceDigest *digest.Digest) error {
-	var imageStreamImageName string
+	var imageStreamName string
 	if instanceDigest == nil {
 		if d.imageStreamImageName == "" {
 			return errors.Errorf("Internal error: Unknown manifest digest, can't add signatures")
 		}
-		imageStreamImageName = d.imageStreamImageName
+		imageStreamName = d.imageStreamImageName
 	} else {
-		imageStreamImageName = instanceDigest.String()
+		imageStreamName = instanceDigest.String()
 	}
 
 	// Because image signatures are a shared resource in Atomic Registry, the default upload
@@ -451,7 +452,7 @@ func (d *openshiftImageDestination) PutSignatures(ctx context.Context, signature
 		return nil // No need to even read the old state.
 	}
 
-	image, err := d.client.getImage(ctx, imageStreamImageName)
+	image, err := d.client.getImage(ctx, imageStreamName)
 	if err != nil {
 		return err
 	}
@@ -474,9 +475,9 @@ sigExists:
 			randBytes := make([]byte, 16)
 			n, err := rand.Read(randBytes)
 			if err != nil || n != 16 {
-				return errors.Wrapf(err, "generating random signature len %d", n)
+				return errors.Wrapf(err, "Error generating random signature len %d", n)
 			}
-			signatureName = fmt.Sprintf("%s@%032x", imageStreamImageName, randBytes)
+			signatureName = fmt.Sprintf("%s@%032x", imageStreamName, randBytes)
 			if _, ok := existingSigNames[signatureName]; !ok {
 				break
 			}
@@ -495,7 +496,7 @@ sigExists:
 		if err != nil {
 			return err
 		}
-		_, err = d.client.doRequest(ctx, http.MethodPost, "/oapi/v1/imagesignatures", body)
+		_, err = d.client.doRequest(ctx, "POST", "/oapi/v1/imagesignatures", body)
 		if err != nil {
 			return err
 		}
@@ -505,9 +506,6 @@ sigExists:
 }
 
 // Commit marks the process of storing the image as successful and asks for the image to be persisted.
-// unparsedToplevel contains data about the top-level manifest of the source (which may be a single-arch image or a manifest list
-// if PutManifest was only called for the single-arch image with instanceDigest == nil), primarily to allow lookups by the
-// original manifest list digest, if desired.
 // WARNING: This does not have any transactional semantics:
 // - Uploaded data MAY be visible to others before Commit() is called
 // - Uploaded data MAY be removed or MAY remain around if Close() is called without Commit() (i.e. rollback is allowed but not guaranteed)

@@ -46,12 +46,10 @@ func Create(ctx context.Context, names, images []string, options *CreateOptions)
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
-
 	return idr.ID, response.Process(&idr)
 }
 
-// Exists returns true if a given manifest list exists
+// Exists returns true if a given maifest list exists
 func Exists(ctx context.Context, name string, options *ExistsOptions) (bool, error) {
 	conn, err := bindings.GetClient(ctx)
 	if err != nil {
@@ -61,8 +59,6 @@ func Exists(ctx context.Context, name string, options *ExistsOptions) (bool, err
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
-
 	return response.IsSuccess(), nil
 }
 
@@ -81,8 +77,6 @@ func Inspect(ctx context.Context, name string, options *InspectOptions) (*manife
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return &list, response.Process(&list)
 }
 
@@ -106,8 +100,6 @@ func Add(ctx context.Context, name string, options *AddOptions) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
-
 	return idr.ID, response.Process(&idr)
 }
 
@@ -129,8 +121,6 @@ func Remove(ctx context.Context, name, digest string, options *RemoveOptions) (s
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
-
 	return idr.ID, response.Process(&idr)
 }
 
@@ -155,20 +145,18 @@ func Push(ctx context.Context, name, destination string, options *images.PushOpt
 	if err != nil {
 		return "", err
 	}
-	// SkipTLSVerify is special.  We need to delete the param added by
-	// toparams and change the key and flip the bool
+	//SkipTLSVerify is special.  We need to delete the param added by
+	//toparams and change the key and flip the bool
 	if options.SkipTLSVerify != nil {
 		params.Del("SkipTLSVerify")
 		params.Set("tlsVerify", strconv.FormatBool(!options.GetSkipTLSVerify()))
 	}
 	params.Set("image", name)
 	params.Set("destination", destination)
-	response, err := conn.DoRequest(nil, http.MethodPost, "/manifests/%s/push", params, nil, name)
+	_, err = conn.DoRequest(nil, http.MethodPost, "/manifests/%s/push", params, nil, name)
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
-
 	return idr.ID, err
 }
 
@@ -191,6 +179,5 @@ func Push(ctx context.Context, name, destination string, options *images.PushOpt
 //	if err != nil {
 //		return "", err
 //	}
-//  defer response.Body.Close()
 //	return idr.ID, response.Process(&idr)
 //}

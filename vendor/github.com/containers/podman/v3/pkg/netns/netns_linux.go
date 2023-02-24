@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     https://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,9 +35,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// GetNSRunDir returns the dir of where to create the netNS. When running
+// get NSRunDir returns the dir of where to create the netNS. When running
 // rootless, it needs to be at a location writable by user.
-func GetNSRunDir() (string, error) {
+func getNSRunDir() (string, error) {
 	if rootless.IsRootless() {
 		rootlessDir, err := util.GetRuntimeDir()
 		if err != nil {
@@ -51,21 +51,15 @@ func GetNSRunDir() (string, error) {
 // NewNS creates a new persistent (bind-mounted) network namespace and returns
 // an object representing that namespace, without switching to it.
 func NewNS() (ns.NetNS, error) {
-	b := make([]byte, 16)
-	_, err := rand.Reader.Read(b)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate random netns name: %v", err)
-	}
-	nsName := fmt.Sprintf("cni-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-	return NewNSWithName(nsName)
-}
-
-// NewNSWithName creates a new persistent (bind-mounted) network namespace and returns
-// an object representing that namespace, without switching to it.
-func NewNSWithName(name string) (ns.NetNS, error) {
-	nsRunDir, err := GetNSRunDir()
+	nsRunDir, err := getNSRunDir()
 	if err != nil {
 		return nil, err
+	}
+
+	b := make([]byte, 16)
+	_, err = rand.Reader.Read(b)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate random netns name: %v", err)
 	}
 
 	// Create the directory for mounting network namespaces
@@ -99,8 +93,10 @@ func NewNSWithName(name string) (ns.NetNS, error) {
 		}
 	}
 
+	nsName := fmt.Sprintf("cni-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+
 	// create an empty file at the mount point
-	nsPath := path.Join(nsRunDir, name)
+	nsPath := path.Join(nsRunDir, nsName)
 	mountPointFd, err := os.Create(nsPath)
 	if err != nil {
 		return nil, err
@@ -181,7 +177,7 @@ func NewNSWithName(name string) (ns.NetNS, error) {
 
 // UnmountNS unmounts the NS held by the netns object
 func UnmountNS(ns ns.NetNS) error {
-	nsRunDir, err := GetNSRunDir()
+	nsRunDir, err := getNSRunDir()
 	if err != nil {
 		return err
 	}

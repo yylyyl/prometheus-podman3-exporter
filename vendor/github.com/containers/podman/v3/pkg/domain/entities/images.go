@@ -1,7 +1,6 @@
 package entities
 
 import (
-	"net/url"
 	"time"
 
 	"github.com/containers/common/pkg/config"
@@ -50,7 +49,6 @@ func (i *Image) Id() string { // nolint
 	return i.ID
 }
 
-// swagger:model LibpodImageSummary
 type ImageSummary struct {
 	ID          string `json:"Id"`
 	ParentId    string // nolint
@@ -90,8 +88,6 @@ type ImageRemoveOptions struct {
 	All bool
 	// Foce will force image removal including containers using the images.
 	Force bool
-	// Confirms if given name is a manifest list and removes it, otherwise returns error.
-	LookupManifest bool
 }
 
 // ImageRemoveResponse is the response for removing one or more image(s) from storage
@@ -188,7 +184,7 @@ type ImagePushOptions struct {
 	// image to the file.  Ignored for remote calls.
 	DigestFile string
 	// Format is the Manifest type (oci, v2s1, or v2s2) to use when pushing an
-	// image. Default is manifest type of source, with fallbacks.
+	// image using the 'dir' transport. Default is manifest type of source.
 	// Ignored for remote calls.
 	Format string
 	// Quiet can be specified to suppress pull progress when pulling.  Ignored
@@ -275,10 +271,8 @@ type ImageLoadReport struct {
 }
 
 type ImageImportOptions struct {
-	Architecture    string
 	Changes         []string
 	Message         string
-	OS              string
 	Quiet           bool
 	Reference       string
 	SignaturePolicy string
@@ -304,30 +298,10 @@ type ImageSaveOptions struct {
 	MultiImageArchive bool
 	// Output - write image to the specified path.
 	Output string
+	// Do not save the signature from the source image
+	RemoveSignatures bool
 	// Quiet - suppress output when copying images
 	Quiet bool
-}
-
-// ImageScpOptions provide options for securely copying images to podman remote
-type ImageScpOptions struct {
-	// SoureImageName is the image the user is providing to load on a remote machine
-	SourceImageName string
-	// Tag allows for a new image to be created under the given name
-	Tag string
-	// ToRemote specifies that we are loading to the remote host
-	ToRemote bool
-	// FromRemote specifies that we are loading from the remote host
-	FromRemote bool
-	// Connections holds the raw string values for connections (ssh or unix)
-	Connections []string
-	// URI contains the ssh connection URLs to be used by the client
-	URI []*url.URL
-	// Iden contains ssh identity keys to be used by the client
-	Iden []string
-	// Save Options used for first half of the scp operation
-	Save ImageSaveOptions
-	// Load options used for the second half of the scp operation
-	Load ImageLoadOptions
 }
 
 // ImageTreeOptions provides options for ImageEngine.Tree()

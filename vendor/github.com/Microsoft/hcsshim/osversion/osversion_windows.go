@@ -2,7 +2,6 @@ package osversion
 
 import (
 	"fmt"
-	"sync"
 
 	"golang.org/x/sys/windows"
 )
@@ -16,26 +15,19 @@ type OSVersion struct {
 	Build        uint16
 }
 
-var (
-	osv  OSVersion
-	once sync.Once
-)
-
 // Get gets the operating system version on Windows.
 // The calling application must be manifested to get the correct version information.
 func Get() OSVersion {
-	once.Do(func() {
-		var err error
-		osv = OSVersion{}
-		osv.Version, err = windows.GetVersion()
-		if err != nil {
-			// GetVersion never fails.
-			panic(err)
-		}
-		osv.MajorVersion = uint8(osv.Version & 0xFF)
-		osv.MinorVersion = uint8(osv.Version >> 8 & 0xFF)
-		osv.Build = uint16(osv.Version >> 16)
-	})
+	var err error
+	osv := OSVersion{}
+	osv.Version, err = windows.GetVersion()
+	if err != nil {
+		// GetVersion never fails.
+		panic(err)
+	}
+	osv.MajorVersion = uint8(osv.Version & 0xFF)
+	osv.MinorVersion = uint8(osv.Version >> 8 & 0xFF)
+	osv.Build = uint16(osv.Version >> 16)
 	return osv
 }
 

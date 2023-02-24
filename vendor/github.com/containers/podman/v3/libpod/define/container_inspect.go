@@ -64,10 +64,6 @@ type InspectContainerConfig struct {
 	Umask string `json:"Umask,omitempty"`
 	// Secrets are the secrets mounted in the container
 	Secrets []*InspectSecret `json:"Secrets,omitempty"`
-	// Timeout is time before container is killed by conmon
-	Timeout uint `json:"Timeout"`
-	// StopTimeout is time before container is stopped when calling stop
-	StopTimeout uint `json:"StopTimeout"`
 }
 
 // InspectRestartPolicy holds information about the container's restart policy.
@@ -189,22 +185,20 @@ type InspectMount struct {
 // Docker, but here we see more fields that are unused (nonsensical in the
 // context of Libpod).
 type InspectContainerState struct {
-	OciVersion   string             `json:"OciVersion"`
-	Status       string             `json:"Status"`
-	Running      bool               `json:"Running"`
-	Paused       bool               `json:"Paused"`
-	Restarting   bool               `json:"Restarting"` // TODO
-	OOMKilled    bool               `json:"OOMKilled"`
-	Dead         bool               `json:"Dead"`
-	Pid          int                `json:"Pid"`
-	ConmonPid    int                `json:"ConmonPid,omitempty"`
-	ExitCode     int32              `json:"ExitCode"`
-	Error        string             `json:"Error"` // TODO
-	StartedAt    time.Time          `json:"StartedAt"`
-	FinishedAt   time.Time          `json:"FinishedAt"`
-	Healthcheck  HealthCheckResults `json:"Healthcheck,omitempty"`
-	Checkpointed bool               `json:"Checkpointed,omitempty"`
-	CgroupPath   string             `json:"CgroupPath,omitempty"`
+	OciVersion  string             `json:"OciVersion"`
+	Status      string             `json:"Status"`
+	Running     bool               `json:"Running"`
+	Paused      bool               `json:"Paused"`
+	Restarting  bool               `json:"Restarting"` // TODO
+	OOMKilled   bool               `json:"OOMKilled"`
+	Dead        bool               `json:"Dead"`
+	Pid         int                `json:"Pid"`
+	ConmonPid   int                `json:"ConmonPid,omitempty"`
+	ExitCode    int32              `json:"ExitCode"`
+	Error       string             `json:"Error"` // TODO
+	StartedAt   time.Time          `json:"StartedAt"`
+	FinishedAt  time.Time          `json:"FinishedAt"`
+	Healthcheck HealthCheckResults `json:"Healthcheck,omitempty"`
 }
 
 // HealthCheckResults describes the results/logs from a healthcheck
@@ -633,7 +627,6 @@ type InspectContainerData struct {
 	OCIConfigPath   string                      `json:"OCIConfigPath,omitempty"`
 	OCIRuntime      string                      `json:"OCIRuntime,omitempty"`
 	ConmonPidFile   string                      `json:"ConmonPidFile"`
-	PidFile         string                      `json:"PidFile"`
 	Name            string                      `json:"Name"`
 	RestartCount    int32                       `json:"RestartCount"`
 	Driver          string                      `json:"Driver"`
@@ -715,16 +708,13 @@ type DriverData struct {
 	Data map[string]string `json:"Data"`
 }
 
-// InspectSecret contains information on secrets mounted inside the container
+// InspectHostPort provides information on a port on the host that a container's
+// port is bound to.
 type InspectSecret struct {
-	// Name is the name of the secret
+	// IP on the host we are bound to. "" if not specified (binding to all
+	// IPs).
 	Name string `json:"Name"`
-	// ID is the ID of the secret
+	// Port on the host we are bound to. No special formatting - just an
+	// integer stuffed into a string.
 	ID string `json:"ID"`
-	// ID is the UID of the mounted secret file
-	UID uint32 `json:"UID"`
-	// ID is the GID of the mounted secret file
-	GID uint32 `json:"GID"`
-	// ID is the ID of the mode of the mounted secret file
-	Mode uint32 `json:"Mode"`
 }

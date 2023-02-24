@@ -1,7 +1,6 @@
 package libpod
 
 import (
-	"context"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -277,10 +276,9 @@ func (c *Container) ExecStart(sessionID string) error {
 }
 
 // ExecStartAndAttach starts and attaches to an exec session in a container.
-// newSize resizes the tty to this size before the process is started, must be nil if the exec session has no tty
 // TODO: Should we include detach keys in the signature to allow override?
 // TODO: How do we handle AttachStdin/AttachStdout/AttachStderr?
-func (c *Container) ExecStartAndAttach(sessionID string, streams *define.AttachStreams, newSize *define.TerminalSize) error {
+func (c *Container) ExecStartAndAttach(sessionID string, streams *define.AttachStreams) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -311,7 +309,7 @@ func (c *Container) ExecStartAndAttach(sessionID string, streams *define.AttachS
 		return err
 	}
 
-	pid, attachChan, err := c.ociRuntime.ExecContainer(c, session.ID(), opts, streams, newSize)
+	pid, attachChan, err := c.ociRuntime.ExecContainer(c, session.ID(), opts, streams)
 	if err != nil {
 		return err
 	}
@@ -374,9 +372,7 @@ func (c *Container) ExecStartAndAttach(sessionID string, streams *define.AttachS
 }
 
 // ExecHTTPStartAndAttach starts and performs an HTTP attach to an exec session.
-// newSize resizes the tty to this size before the process is started, must be nil if the exec session has no tty
-func (c *Container) ExecHTTPStartAndAttach(sessionID string, r *http.Request, w http.ResponseWriter,
-	streams *HTTPAttachStreams, detachKeys *string, cancel <-chan bool, hijackDone chan<- bool, newSize *define.TerminalSize) error {
+func (c *Container) ExecHTTPStartAndAttach(sessionID string, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, detachKeys *string, cancel <-chan bool, hijackDone chan<- bool) error {
 	// TODO: How do we combine streams with the default streams set in the exec session?
 
 	// Ensure that we don't leak a goroutine here
@@ -434,7 +430,7 @@ func (c *Container) ExecHTTPStartAndAttach(sessionID string, r *http.Request, w 
 		close(holdConnOpen)
 	}()
 
-	pid, attachChan, err := c.ociRuntime.ExecContainerHTTP(c, session.ID(), execOpts, r, w, streams, cancel, hijackDone, holdConnOpen, newSize)
+	pid, attachChan, err := c.ociRuntime.ExecContainerHTTP(c, session.ID(), execOpts, r, w, streams, cancel, hijackDone, holdConnOpen)
 	if err != nil {
 		session.State = define.ExecStateStopped
 		session.ExitCode = define.TranslateExecErrorToExitCode(define.ExecErrorCodeGeneric, err)
@@ -543,7 +539,18 @@ func (c *Container) ExecStop(sessionID string, timeout *uint) error {
 	var cleanupErr error
 
 	// Retrieve exit code and update status
-	if err := retrieveAndWriteExecExitCode(c, session.ID()); err != nil {
+	exitCode, err := c.readExecExitCode(session.ID())
+	if err != nil {
+		cleanupErr = err
+	}
+	session.ExitCode = exitCode
+	session.PID = 0
+	session.State = define.ExecStateStopped
+
+	if err := c.save(); err != nil {
+		if cleanupErr != nil {
+			logrus.Errorf("Error stopping container %s exec session %s: %v", c.ID(), session.ID(), cleanupErr)
+		}
 		cleanupErr = err
 	}
 
@@ -585,7 +592,15 @@ func (c *Container) ExecCleanup(sessionID string) error {
 			return errors.Wrapf(define.ErrExecSessionStateInvalid, "cannot clean up container %s exec session %s as it is running", c.ID(), session.ID())
 		}
 
-		if err := retrieveAndWriteExecExitCode(c, session.ID()); err != nil {
+		exitCode, err := c.readExecExitCode(session.ID())
+		if err != nil {
+			return err
+		}
+		session.ExitCode = exitCode
+		session.PID = 0
+		session.State = define.ExecStateStopped
+
+		if err := c.save(); err != nil {
 			return err
 		}
 	}
@@ -622,9 +637,9 @@ func (c *Container) ExecRemove(sessionID string, force bool) error {
 			return err
 		}
 		if !running {
-			if err := retrieveAndWriteExecExitCode(c, session.ID()); err != nil {
-				return err
-			}
+			session.State = define.ExecStateStopped
+			// TODO: should we retrieve exit code here?
+			// TODO: Might be worth saving state here.
 		}
 	}
 
@@ -635,10 +650,6 @@ func (c *Container) ExecRemove(sessionID string, force bool) error {
 
 		// Stop the session
 		if err := c.ociRuntime.ExecStopContainer(c, session.ID(), c.StopTimeout()); err != nil {
-			return err
-		}
-
-		if err := retrieveAndWriteExecExitCode(c, session.ID()); err != nil {
 			return err
 		}
 
@@ -722,10 +733,7 @@ func (c *Container) Exec(config *ExecConfig, streams *define.AttachStreams, resi
 	// API there.
 	// TODO: Refactor so this is closed here, before we remove the exec
 	// session.
-	var size *define.TerminalSize
 	if resize != nil {
-		s := <-resize
-		size = &s
 		go func() {
 			logrus.Debugf("Sending resize events to exec session %s", sessionID)
 			for resizeRequest := range resize {
@@ -743,31 +751,16 @@ func (c *Container) Exec(config *ExecConfig, streams *define.AttachStreams, resi
 		}()
 	}
 
-	if err := c.ExecStartAndAttach(sessionID, streams, size); err != nil {
+	if err := c.ExecStartAndAttach(sessionID, streams); err != nil {
 		return -1, err
 	}
 
 	session, err := c.ExecSession(sessionID)
 	if err != nil {
-		if errors.Cause(err) == define.ErrNoSuchExecSession {
-			// TODO: If a proper Context is ever plumbed in here, we
-			// should use it.
-			// As things stand, though, it's not worth it - this
-			// should always terminate quickly since it's not
-			// streaming.
-			diedEvent, err := c.runtime.GetExecDiedEvent(context.Background(), c.ID(), sessionID)
-			if err != nil {
-				return -1, errors.Wrapf(err, "error retrieving exec session %s exit code", sessionID)
-			}
-			return diedEvent.ContainerExitCode, nil
-		}
 		return -1, err
 	}
 	exitCode := session.ExitCode
 	if err := c.ExecRemove(sessionID, false); err != nil {
-		if errors.Cause(err) == define.ErrNoSuchExecSession {
-			return exitCode, nil
-		}
 		return -1, err
 	}
 
@@ -780,7 +773,7 @@ func (c *Container) cleanupExecBundle(sessionID string) error {
 		return err
 	}
 
-	return nil
+	return c.ociRuntime.ExecContainerCleanup(c, sessionID)
 }
 
 // the path to a containers exec session bundle
@@ -934,8 +927,6 @@ func (c *Container) getActiveExecSessions() ([]string, error) {
 				session.PID = 0
 				session.State = define.ExecStateStopped
 
-				c.newExecDiedEvent(session.ID(), exitCode)
-
 				needSave = true
 			}
 			if err := c.cleanupExecBundle(id); err != nil {
@@ -1044,22 +1035,6 @@ func writeExecExitCode(c *Container, sessionID string, exitCode int) error {
 		}
 		return errors.Wrapf(err, "error syncing container %s state to remove exec session %s", c.ID(), sessionID)
 	}
-
-	return justWriteExecExitCode(c, sessionID, exitCode)
-}
-
-func retrieveAndWriteExecExitCode(c *Container, sessionID string) error {
-	exitCode, err := c.readExecExitCode(sessionID)
-	if err != nil {
-		return err
-	}
-
-	return justWriteExecExitCode(c, sessionID, exitCode)
-}
-
-func justWriteExecExitCode(c *Container, sessionID string, exitCode int) error {
-	// Write an event first
-	c.newExecDiedEvent(sessionID, exitCode)
 
 	session, ok := c.state.ExecSessions[sessionID]
 	if !ok {

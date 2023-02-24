@@ -92,12 +92,11 @@ func NewDiscardFilePutter() FilePutter {
 }
 
 type bitBucketFilePutter struct {
-	buffer [32 * 1024]byte // 32 kB is the buffer size currently used by io.Copy, as of August 2021.
 }
 
 func (bbfp *bitBucketFilePutter) Put(name string, r io.Reader) (int64, []byte, error) {
 	c := crc64.New(CRCTable)
-	i, err := io.CopyBuffer(c, r, bbfp.buffer[:])
+	i, err := io.Copy(c, r)
 	return i, c.Sum(nil), err
 }
 

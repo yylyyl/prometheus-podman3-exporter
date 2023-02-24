@@ -52,7 +52,7 @@ func GetPIDs() ([]string, error) {
 	return pids, nil
 }
 
-// GetPIDsFromCgroup returns a strings slice of all pids listed in pid's pids
+// GetPIDsFromCgroup returns a strings slice of all pids listesd in pid's pids
 // cgroup.  It automatically detects if we're running in unified mode or not.
 func GetPIDsFromCgroup(pid string) ([]string, error) {
 	unified, err := cgroups.IsCgroup2UnifiedMode()
@@ -65,12 +65,11 @@ func GetPIDsFromCgroup(pid string) ([]string, error) {
 	return getPIDsFromCgroupV1(pid)
 }
 
-// getPIDsFromCgroupV1 returns a strings slice of all pids listed in pid's pids
+// getPIDsFromCgroupV1 returns a strings slice of all pids listesd in pid's pids
 // cgroup.
 func getPIDsFromCgroupV1(pid string) ([]string, error) {
 	// First, find the corresponding path to the PID cgroup.
-	pidPath := fmt.Sprintf("/proc/%s/cgroup", pid)
-	f, err := os.Open(pidPath)
+	f, err := os.Open(fmt.Sprintf("/proc/%s/cgroup", pid))
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +83,7 @@ func getPIDsFromCgroupV1(pid string) ([]string, error) {
 			continue
 		}
 		if fields[1] == "pids" {
-			cgroupPath = filepath.Join(cgroups.CgroupRoot, "pids", fields[2], "cgroup.procs")
-			break
+			cgroupPath = fmt.Sprintf("/sys/fs/cgroup/pids/%s/cgroup.procs", fields[2])
 		}
 	}
 
@@ -96,18 +94,7 @@ func getPIDsFromCgroupV1(pid string) ([]string, error) {
 	// Second, extract the PIDs inside the cgroup.
 	f, err = os.Open(cgroupPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// OCI runtimes might mount the container cgroup at the root, breaking what it showed
-			// in /proc/$PID/cgroup and the path.
-			// Check if the PID still exists to make sure the process is still alive.
-			if _, errStat := os.Stat(pidPath); errStat == nil {
-				cgroupPath = filepath.Join(cgroups.CgroupRoot, "pids", "cgroup.procs")
-				f, err = os.Open(cgroupPath)
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	defer f.Close()
 
@@ -120,7 +107,7 @@ func getPIDsFromCgroupV1(pid string) ([]string, error) {
 	return pids, nil
 }
 
-// getPIDsFromCgroupV2 returns a strings slice of all pids listed in pid's pids
+// getPIDsFromCgroupV2 returns a strings slice of all pids listesd in pid's pids
 // cgroup.
 func getPIDsFromCgroupV2(pid string) ([]string, error) {
 	// First, find the corresponding path to the PID cgroup.
@@ -137,10 +124,8 @@ func getPIDsFromCgroupV2(pid string) ([]string, error) {
 		if len(fields) != 3 {
 			continue
 		}
-		if fields[1] == "" {
-			cgroupSlice = fields[2]
-			break
-		}
+		cgroupSlice = fields[2]
+		break
 	}
 
 	if cgroupSlice == "" {

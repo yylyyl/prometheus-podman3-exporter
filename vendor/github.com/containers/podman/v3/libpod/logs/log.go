@@ -34,7 +34,6 @@ type LogOptions struct {
 	Details    bool
 	Follow     bool
 	Since      time.Time
-	Until      time.Time
 	Tail       int64
 	Timestamps bool
 	Multi      bool
@@ -185,12 +184,7 @@ func (l *LogLine) String(options *LogOptions) string {
 
 // Since returns a bool as to whether a log line occurred after a given time
 func (l *LogLine) Since(since time.Time) bool {
-	return l.Time.After(since) || since.IsZero()
-}
-
-// Until returns a bool as to whether a log line occurred before a given time
-func (l *LogLine) Until(until time.Time) bool {
-	return l.Time.Before(until) || until.IsZero()
+	return l.Time.After(since)
 }
 
 // NewLogLine creates a logLine struct from a container log string
@@ -208,36 +202,6 @@ func NewLogLine(line string) (*LogLine, error) {
 		Device:       splitLine[1],
 		ParseLogType: splitLine[2],
 		Msg:          strings.Join(splitLine[3:], " "),
-	}
-	return &l, nil
-}
-
-// NewJournaldLogLine creates a LogLine from the specified line from journald.
-// Note that if withID is set, the first item of the message is considerred to
-// be the container ID and set as such.
-func NewJournaldLogLine(line string, withID bool) (*LogLine, error) {
-	splitLine := strings.Split(line, " ")
-	if len(splitLine) < 4 {
-		return nil, errors.Errorf("'%s' is not a valid container log line", line)
-	}
-	logTime, err := time.Parse(LogTimeFormat, splitLine[0])
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to convert time %s from container log", splitLine[0])
-	}
-	var msg, id string
-	if withID {
-		id = splitLine[3]
-		msg = strings.Join(splitLine[4:], " ")
-	} else {
-		msg = strings.Join(splitLine[3:], " ")
-		// NO ID
-	}
-	l := LogLine{
-		Time:         logTime,
-		Device:       splitLine[1],
-		ParseLogType: splitLine[2],
-		Msg:          msg,
-		CID:          id,
 	}
 	return &l, nil
 }

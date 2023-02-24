@@ -33,13 +33,12 @@ func Logs(ctx context.Context, nameOrID string, options *LogOptions, stdoutChan,
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
 
 	buffer := make([]byte, 1024)
 	for {
 		fd, l, err := DemuxHeader(response.Body, buffer)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

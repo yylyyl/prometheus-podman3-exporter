@@ -4,6 +4,7 @@ package chrootarchive
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ import (
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/reexec"
 	"github.com/containers/storage/pkg/system"
-	"github.com/opencontainers/runc/libcontainer/userns"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
 )
 
 type applyLayerResponse struct {
@@ -35,7 +36,7 @@ func applyLayer() {
 	runtime.LockOSThread()
 	flag.Parse()
 
-	inUserns := userns.RunningInUserNS()
+	inUserns := rsystem.RunningInUserNS()
 	if err := chroot(flag.Arg(0)); err != nil {
 		fatal(err)
 	}
@@ -94,7 +95,7 @@ func applyLayerHandler(dest string, layer io.Reader, options *archive.TarOptions
 	}
 	if options == nil {
 		options = &archive.TarOptions{}
-		if userns.RunningInUserNS() {
+		if rsystem.RunningInUserNS() {
 			options.InUserNS = true
 		}
 	}

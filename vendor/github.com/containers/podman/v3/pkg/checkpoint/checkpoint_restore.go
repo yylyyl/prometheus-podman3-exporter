@@ -6,15 +6,11 @@ import (
 	"os"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
-	"github.com/containers/common/libimage"
-	"github.com/containers/common/pkg/config"
 	"github.com/containers/podman/v3/libpod"
-	ann "github.com/containers/podman/v3/pkg/annotations"
-	"github.com/containers/podman/v3/pkg/checkpoint/crutils"
-	"github.com/containers/podman/v3/pkg/criu"
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/specgen/generate"
+	"github.com/containers/podman/v3/pkg/util"
 	"github.com/containers/storage/pkg/archive"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -66,27 +62,19 @@ func CRImportCheckpoint(ctx context.Context, runtime *libpod.Runtime, restoreOpt
 	}
 
 	// Load config.dump from temporary directory
-	ctrConfig := new(libpod.ContainerConfig)
-	if _, err = metadata.ReadJSONFile(ctrConfig, dir, metadata.ConfigDumpFile); err != nil {
+	config := new(libpod.ContainerConfig)
+	if _, err = metadata.ReadJSONFile(config, dir, metadata.ConfigDumpFile); err != nil {
 		return nil, err
 	}
 
-	if ctrConfig.Pod != "" && restoreOptions.Pod == "" {
-		return nil, errors.New("cannot restore pod container without --pod")
-	}
-
-	if ctrConfig.Pod == "" && restoreOptions.Pod != "" {
-		return nil, errors.New("cannot restore non pod container into pod")
-	}
-
 	// This should not happen as checkpoints with these options are not exported.
-	if len(ctrConfig.Dependencies) > 0 {
+	if len(config.Dependencies) > 0 {
 		return nil, errors.Errorf("Cannot import checkpoints of containers with dependencies")
 	}
 
 	// Volumes included in the checkpoint should not exist
 	if !restoreOptions.IgnoreVolumes {
-		for _, vol := range ctrConfig.NamedVolumes {
+		for _, vol := range config.NamedVolumes {
 			exists, err := runtime.HasVolume(vol.Name)
 			if err != nil {
 				return nil, err
@@ -97,117 +85,33 @@ func CRImportCheckpoint(ctx context.Context, runtime *libpod.Runtime, restoreOpt
 		}
 	}
 
-	ctrID := ctrConfig.ID
+	ctrID := config.ID
 	newName := false
 
 	// Check if the restored container gets a new name
 	if restoreOptions.Name != "" {
-		ctrConfig.ID = ""
-		ctrConfig.Name = restoreOptions.Name
+		config.ID = ""
+		config.Name = restoreOptions.Name
 		newName = true
 	}
 
-	if restoreOptions.Pod != "" {
-		// Restoring into a Pod requires much newer versions of CRIU
-		if !criu.CheckForCriu(criu.PodCriuVersion) {
-			return nil, errors.Errorf("restoring containers into pods requires at least CRIU %d", criu.PodCriuVersion)
-		}
-		// The runtime also has to support it
-		if !crutils.CRRuntimeSupportsPodCheckpointRestore(runtime.GetOCIRuntimePath()) {
-			return nil, errors.Errorf("runtime %s does not support pod restore", runtime.GetOCIRuntimePath())
-		}
-		// Restoring into an existing Pod
-		ctrConfig.Pod = restoreOptions.Pod
+	ctrName := config.Name
 
-		// According to podman pod create a pod can share the following namespaces:
-		// cgroup, ipc, net, pid, uts
-		// Let's make sure we a restoring into a pod with the same shared namespaces.
-		pod, err := runtime.LookupPod(ctrConfig.Pod)
-		if err != nil {
-			return nil, errors.Wrapf(err, "pod %q cannot be retrieved", ctrConfig.Pod)
-		}
-
-		infraContainer, err := pod.InfraContainer()
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot retrieve infra container from pod %q", ctrConfig.Pod)
-		}
-
-		// If a namespaces was shared (!= "") it needs to be set to the new infrastructure container
-		// If the infrastructure container does not share the same namespaces as the to be restored
-		// container we abort.
-		if ctrConfig.IPCNsCtr != "" {
-			if !pod.SharesIPC() {
-				return nil, errors.Errorf("pod %s does not share the IPC namespace", ctrConfig.Pod)
-			}
-			ctrConfig.IPCNsCtr = infraContainer.ID()
-		}
-
-		if ctrConfig.NetNsCtr != "" {
-			if !pod.SharesNet() {
-				return nil, errors.Errorf("pod %s does not share the network namespace", ctrConfig.Pod)
-			}
-			ctrConfig.NetNsCtr = infraContainer.ID()
-		}
-
-		if ctrConfig.PIDNsCtr != "" {
-			if !pod.SharesPID() {
-				return nil, errors.Errorf("pod %s does not share the PID namespace", ctrConfig.Pod)
-			}
-			ctrConfig.PIDNsCtr = infraContainer.ID()
-		}
-
-		if ctrConfig.UTSNsCtr != "" {
-			if !pod.SharesUTS() {
-				return nil, errors.Errorf("pod %s does not share the UTS namespace", ctrConfig.Pod)
-			}
-			ctrConfig.UTSNsCtr = infraContainer.ID()
-		}
-
-		if ctrConfig.CgroupNsCtr != "" {
-			if !pod.SharesCgroup() {
-				return nil, errors.Errorf("pod %s does not share the cgroup namespace", ctrConfig.Pod)
-			}
-			ctrConfig.CgroupNsCtr = infraContainer.ID()
-		}
-
-		// Change SELinux labels to infrastructure container labels
-		ctrConfig.MountLabel = infraContainer.MountLabel()
-		ctrConfig.ProcessLabel = infraContainer.ProcessLabel()
-
-		// Fix parent cgroup
-		cgroupPath, err := pod.CgroupPath()
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot retrieve cgroup path from pod %q", ctrConfig.Pod)
-		}
-		ctrConfig.CgroupParent = cgroupPath
-
-		oldPodID := dumpSpec.Annotations[ann.SandboxID]
-		// Fix up SandboxID in the annotations
-		dumpSpec.Annotations[ann.SandboxID] = ctrConfig.Pod
-		// Fix up CreateCommand
-		for i, c := range ctrConfig.CreateCommand {
-			if c == oldPodID {
-				ctrConfig.CreateCommand[i] = ctrConfig.Pod
-			}
-		}
+	// The code to load the images is copied from create.go
+	// In create.go this only set if '--quiet' does not exist.
+	writer := os.Stderr
+	rtc, err := runtime.GetConfig()
+	if err != nil {
+		return nil, err
 	}
 
-	if len(restoreOptions.PublishPorts) > 0 {
-		ports, _, _, err := generate.ParsePortMapping(restoreOptions.PublishPorts)
-		if err != nil {
-			return nil, err
-		}
-		ctrConfig.PortMappings = ports
-	}
-
-	pullOptions := &libimage.PullOptions{}
-	pullOptions.Writer = os.Stderr
-	if _, err := runtime.LibimageRuntime().Pull(ctx, ctrConfig.RootfsImageName, config.PullPolicyMissing, pullOptions); err != nil {
+	_, err = runtime.ImageRuntime().New(ctx, config.RootfsImageName, rtc.Engine.SignaturePolicyPath, "", writer, nil, image.SigningOptions{}, nil, util.PullImageMissing, nil)
+	if err != nil {
 		return nil, err
 	}
 
 	// Now create a new container from the just loaded information
-	container, err := runtime.RestoreContainer(ctx, dumpSpec, ctrConfig)
+	container, err := runtime.RestoreContainer(ctx, dumpSpec, config)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +122,6 @@ func CRImportCheckpoint(ctx context.Context, runtime *libpod.Runtime, restoreOpt
 	}
 
 	containerConfig := container.Config()
-	ctrName := ctrConfig.Name
 	if containerConfig.Name != ctrName {
 		return nil, errors.Errorf("Name of restored container (%s) does not match requested name (%s)", containerConfig.Name, ctrName)
 	}

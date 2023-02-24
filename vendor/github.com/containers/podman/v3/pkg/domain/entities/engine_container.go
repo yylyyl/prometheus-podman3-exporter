@@ -8,20 +8,22 @@ import (
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/pkg/domain/entities/reports"
 	"github.com/containers/podman/v3/pkg/specgen"
+	"github.com/spf13/cobra"
 )
 
 type ContainerCopyFunc func() error
 
 type ContainerEngine interface {
-	AutoUpdate(ctx context.Context, options AutoUpdateOptions) ([]*AutoUpdateReport, []error)
+	AutoUpdate(ctx context.Context, options AutoUpdateOptions) (*AutoUpdateReport, []error)
 	Config(ctx context.Context) (*config.Config, error)
 	ContainerAttach(ctx context.Context, nameOrID string, options AttachOptions) error
 	ContainerCheckpoint(ctx context.Context, namesOrIds []string, options CheckpointOptions) ([]*CheckpointReport, error)
 	ContainerCleanup(ctx context.Context, namesOrIds []string, options ContainerCleanupOptions) ([]*ContainerCleanupReport, error)
 	ContainerCommit(ctx context.Context, nameOrID string, options CommitOptions) (*CommitReport, error)
-	ContainerCopyFromArchive(ctx context.Context, nameOrID, path string, reader io.Reader, options CopyOptions) (ContainerCopyFunc, error)
+	ContainerCopyFromArchive(ctx context.Context, nameOrID string, path string, reader io.Reader) (ContainerCopyFunc, error)
 	ContainerCopyToArchive(ctx context.Context, nameOrID string, path string, writer io.Writer) (ContainerCopyFunc, error)
 	ContainerCreate(ctx context.Context, s *specgen.SpecGenerator) (*ContainerCreateReport, error)
+	ContainerDiff(ctx context.Context, nameOrID string, options DiffOptions) (*DiffReport, error)
 	ContainerExec(ctx context.Context, nameOrID string, options ExecOptions, streams define.AttachStreams) (int, error)
 	ContainerExecDetached(ctx context.Context, nameOrID string, options ExecOptions) (string, error)
 	ContainerExists(ctx context.Context, nameOrID string, options ContainerExistsOptions) (*BoolReport, error)
@@ -30,7 +32,6 @@ type ContainerEngine interface {
 	ContainerInspect(ctx context.Context, namesOrIds []string, options InspectOptions) ([]*ContainerInspectReport, []error, error)
 	ContainerKill(ctx context.Context, namesOrIds []string, options KillOptions) ([]*KillReport, error)
 	ContainerList(ctx context.Context, options ContainerListOptions) ([]ListContainer, error)
-	ContainerListExternal(ctx context.Context) ([]ListContainer, error)
 	ContainerLogs(ctx context.Context, containers []string, options ContainerLogsOptions) error
 	ContainerMount(ctx context.Context, nameOrIDs []string, options ContainerMountOptions) ([]*ContainerMountReport, error)
 	ContainerPause(ctx context.Context, namesOrIds []string, options PauseUnPauseOptions) ([]*PauseUnpauseReport, error)
@@ -50,7 +51,6 @@ type ContainerEngine interface {
 	ContainerUnmount(ctx context.Context, nameOrIDs []string, options ContainerUnmountOptions) ([]*ContainerUnmountReport, error)
 	ContainerUnpause(ctx context.Context, namesOrIds []string, options PauseUnPauseOptions) ([]*PauseUnpauseReport, error)
 	ContainerWait(ctx context.Context, namesOrIds []string, options WaitOptions) ([]WaitReport, error)
-	Diff(ctx context.Context, namesOrIds []string, options DiffOptions) (*DiffReport, error)
 	Events(ctx context.Context, opts EventsOptions) error
 	GenerateSystemd(ctx context.Context, nameOrID string, opts GenerateSystemdOptions) (*GenerateSystemdReport, error)
 	GenerateKube(ctx context.Context, nameOrIDs []string, opts GenerateKubeOptions) (*GenerateKubeReport, error)
@@ -67,12 +67,10 @@ type ContainerEngine interface {
 	NetworkReload(ctx context.Context, names []string, options NetworkReloadOptions) ([]*NetworkReloadReport, error)
 	NetworkRm(ctx context.Context, namesOrIds []string, options NetworkRmOptions) ([]*NetworkRmReport, error)
 	PlayKube(ctx context.Context, path string, opts PlayKubeOptions) (*PlayKubeReport, error)
-	PlayKubeDown(ctx context.Context, path string, opts PlayKubeDownOptions) (*PlayKubeReport, error)
-	PodCreate(ctx context.Context, specg PodSpec) (*PodCreateReport, error)
+	PodCreate(ctx context.Context, opts PodCreateOptions) (*PodCreateReport, error)
 	PodExists(ctx context.Context, nameOrID string) (*BoolReport, error)
 	PodInspect(ctx context.Context, options PodInspectOptions) (*PodInspectReport, error)
 	PodKill(ctx context.Context, namesOrIds []string, options PodKillOptions) ([]*PodKillReport, error)
-	PodLogs(ctx context.Context, pod string, options PodLogsOptions) error
 	PodPause(ctx context.Context, namesOrIds []string, options PodPauseOptions) ([]*PodPauseReport, error)
 	PodPrune(ctx context.Context, options PodPruneOptions) ([]*PodPruneReport, error)
 	PodPs(ctx context.Context, options PodPSOptions) ([]*ListPodsReport, error)
@@ -83,18 +81,17 @@ type ContainerEngine interface {
 	PodStop(ctx context.Context, namesOrIds []string, options PodStopOptions) ([]*PodStopReport, error)
 	PodTop(ctx context.Context, options PodTopOptions) (*StringSliceReport, error)
 	PodUnpause(ctx context.Context, namesOrIds []string, options PodunpauseOptions) ([]*PodUnpauseReport, error)
-	SetupRootless(ctx context.Context, noMoveProcess bool) error
+	SetupRootless(ctx context.Context, cmd *cobra.Command) error
 	SecretCreate(ctx context.Context, name string, reader io.Reader, options SecretCreateOptions) (*SecretCreateReport, error)
 	SecretInspect(ctx context.Context, nameOrIDs []string) ([]*SecretInfoReport, []error, error)
-	SecretList(ctx context.Context, opts SecretListRequest) ([]*SecretInfoReport, error)
+	SecretList(ctx context.Context) ([]*SecretInfoReport, error)
 	SecretRm(ctx context.Context, nameOrID []string, opts SecretRmOptions) ([]*SecretRmReport, error)
 	Shutdown(ctx context.Context)
 	SystemDf(ctx context.Context, options SystemDfOptions) (*SystemDfReport, error)
-	Unshare(ctx context.Context, args []string, options SystemUnshareOptions) error
+	Unshare(ctx context.Context, args []string) error
 	Version(ctx context.Context) (*SystemVersionReport, error)
 	VolumeCreate(ctx context.Context, opts VolumeCreateOptions) (*IDOrNameResponse, error)
 	VolumeExists(ctx context.Context, namesOrID string) (*BoolReport, error)
-	VolumeMounted(ctx context.Context, namesOrID string) (*BoolReport, error)
 	VolumeInspect(ctx context.Context, namesOrIds []string, opts InspectOptions) ([]*VolumeInspectReport, []error, error)
 	VolumeList(ctx context.Context, opts VolumeListOptions) ([]*VolumeListReport, error)
 	VolumePrune(ctx context.Context, options VolumePruneOptions) ([]*reports.PruneReport, error)

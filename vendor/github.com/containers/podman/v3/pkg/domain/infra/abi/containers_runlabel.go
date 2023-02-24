@@ -7,9 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/common/libimage"
-	"github.com/containers/common/pkg/config"
 	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	envLib "github.com/containers/podman/v3/pkg/env"
 	"github.com/containers/podman/v3/utils"
@@ -19,48 +18,21 @@ import (
 )
 
 func (ic *ContainerEngine) ContainerRunlabel(ctx context.Context, label string, imageRef string, args []string, options entities.ContainerRunlabelOptions) error {
-	pullOptions := &libimage.PullOptions{}
-	pullOptions.AuthFilePath = options.Authfile
-	pullOptions.CertDirPath = options.CertDir
-	pullOptions.Credentials = options.Credentials
-	pullOptions.SignaturePolicyPath = options.SignaturePolicy
-	pullOptions.InsecureSkipTLSVerify = options.SkipTLSVerify
-
-	pullPolicy := config.PullPolicyNever
-	if options.Pull {
-		pullPolicy = config.PullPolicyMissing
-	}
-	if !options.Quiet {
-		pullOptions.Writer = os.Stderr
-	}
-
-	pulledImages, err := ic.Libpod.LibimageRuntime().Pull(ctx, imageRef, pullPolicy, pullOptions)
+	// First, get the image and pull it if needed.
+	img, err := ic.runlabelImage(ctx, label, imageRef, options)
 	if err != nil {
 		return err
 	}
-
-	if len(pulledImages) != 1 {
-		return errors.Errorf("internal error: expected an image to be pulled (or an error)")
-	}
-
 	// Extract the runlabel from the image.
-	labels, err := pulledImages[0].Labels(ctx)
+	runlabel, err := img.GetLabel(ctx, label)
 	if err != nil {
 		return err
-	}
-
-	var runlabel string
-	for k, v := range labels {
-		if strings.EqualFold(k, label) {
-			runlabel = v
-			break
-		}
 	}
 	if runlabel == "" {
 		return errors.Errorf("cannot find the value of label: %s in image: %s", label, imageRef)
 	}
 
-	cmd, env, err := generateRunlabelCommand(runlabel, pulledImages[0], imageRef, args, options)
+	cmd, env, err := generateRunlabelCommand(runlabel, img, args, options)
 	if err != nil {
 		return err
 	}
@@ -104,9 +76,36 @@ func (ic *ContainerEngine) ContainerRunlabel(ctx context.Context, label string, 
 	return utils.ExecCmdWithStdStreams(stdIn, stdOut, stdErr, env, cmd[0], cmd[1:]...)
 }
 
+// runlabelImage returns an image based on the specified image AND options.
+func (ic *ContainerEngine) runlabelImage(ctx context.Context, label string, imageRef string, options entities.ContainerRunlabelOptions) (*image.Image, error) {
+	// First, look up the image locally. If we get an error and requested
+	// to pull, fallthrough and pull it.
+	img, err := ic.Libpod.ImageRuntime().NewFromLocal(imageRef)
+	switch {
+	case err == nil:
+		return img, nil
+	case !options.Pull:
+		return nil, err
+	default:
+		// Fallthrough and pull!
+	}
+
+	pullOptions := entities.ImagePullOptions{
+		Quiet:           options.Quiet,
+		CertDir:         options.CertDir,
+		SkipTLSVerify:   options.SkipTLSVerify,
+		SignaturePolicy: options.SignaturePolicy,
+		Authfile:        options.Authfile,
+	}
+	if _, err := pull(ctx, ic.Libpod.ImageRuntime(), imageRef, pullOptions, &label); err != nil {
+		return nil, err
+	}
+	return ic.Libpod.ImageRuntime().NewFromLocal(imageRef)
+}
+
 // generateRunlabelCommand generates the to-be-executed command as a string
 // slice along with a base environment.
-func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName string, args []string, options entities.ContainerRunlabelOptions) ([]string, []string, error) {
+func generateRunlabelCommand(runlabel string, img *image.Image, args []string, options entities.ContainerRunlabelOptions) ([]string, []string, error) {
 	var (
 		err             error
 		name, imageName string
@@ -114,28 +113,24 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 		cmd             []string
 	)
 
+	// TODO: How do we get global opts as done in v1?
+
 	// Extract the imageName (or ID).
-	imgNames := img.NamesHistory()
+	imgNames := img.Names()
 	if len(imgNames) == 0 {
 		imageName = img.ID()
 	} else {
-		// The newest name is the first entry in the `NamesHistory`
-		// slice.
 		imageName = imgNames[0]
 	}
 
 	// Use the user-specified name or extract one from the image.
-	name = options.Name
-	if name == "" {
-		normalize := imageName
-		if !strings.HasPrefix(img.ID(), inputName) {
-			normalize = inputName
+	if options.Name != "" {
+		name = options.Name
+	} else {
+		name, err = image.GetImageBaseName(imageName)
+		if err != nil {
+			return nil, nil, err
 		}
-		splitImageName := strings.Split(normalize, "/")
-		name = splitImageName[len(splitImageName)-1]
-		// make sure to remove the tag from the image name, otherwise the name cannot
-		// be used as container name because a colon is an illegal character
-		name = strings.SplitN(name, ":", 2)[0]
 	}
 
 	// Append the user-specified arguments to the runlabel (command).
@@ -183,28 +178,13 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 }
 
 func replaceName(arg, name string) string {
-	if arg == "NAME" {
-		return name
-	}
-
 	newarg := strings.ReplaceAll(arg, "$NAME", name)
-	newarg = strings.ReplaceAll(newarg, "${NAME}", name)
-	if strings.HasSuffix(newarg, "=NAME") {
-		newarg = strings.ReplaceAll(newarg, "=NAME", fmt.Sprintf("=%s", name))
-	}
-	return newarg
+	return strings.ReplaceAll(newarg, "${NAME}", name)
 }
 
 func replaceImage(arg, image string) string {
-	if arg == "IMAGE" {
-		return image
-	}
 	newarg := strings.ReplaceAll(arg, "$IMAGE", image)
-	newarg = strings.ReplaceAll(newarg, "${IMAGE}", image)
-	if strings.HasSuffix(newarg, "=IMAGE") {
-		newarg = strings.ReplaceAll(newarg, "=IMAGE", fmt.Sprintf("=%s", image))
-	}
-	return newarg
+	return strings.ReplaceAll(newarg, "${IMAGE}", image)
 }
 
 // generateCommand takes a label (string) and converts it to an executable command

@@ -17,7 +17,6 @@ import (
 	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/containers/podman/v3/pkg/domain/entities/reports"
 	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/stringid"
 	"github.com/docker/go-units"
@@ -39,42 +38,13 @@ type CtrCreateOption func(*Container) error
 type ContainerFilter func(*Container) bool
 
 // NewContainer creates a new container from a given OCI config.
-func (r *Runtime) NewContainer(ctx context.Context, rSpec *spec.Spec, spec *specgen.SpecGenerator, infra bool, options ...CtrCreateOption) (*Container, error) {
+func (r *Runtime) NewContainer(ctx context.Context, rSpec *spec.Spec, options ...CtrCreateOption) (*Container, error) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	if !r.valid {
 		return nil, define.ErrRuntimeStopped
 	}
-	if infra {
-		options = append(options, withIsInfra())
-	}
 	return r.newContainer(ctx, rSpec, options...)
-}
-
-func (r *Runtime) PrepareVolumeOnCreateContainer(ctx context.Context, ctr *Container) error {
-	// Copy the content from the underlying image into the newly created
-	// volume if configured to do so.
-	if !r.config.Containers.PrepareVolumeOnCreate {
-		return nil
-	}
-
-	defer func() {
-		if err := ctr.cleanupStorage(); err != nil {
-			logrus.Errorf("error cleaning up container storage %s: %v", ctr.ID(), err)
-		}
-	}()
-
-	mountPoint, err := ctr.mountStorage()
-	if err == nil {
-		// Finish up mountStorage
-		ctr.state.Mounted = true
-		ctr.state.Mountpoint = mountPoint
-		if err = ctr.save(); err != nil {
-			logrus.Errorf("Error saving container %s state: %v", ctr.ID(), err)
-		}
-	}
-
-	return err
 }
 
 // RestoreContainer re-creates a container from an imported checkpoint
@@ -97,13 +67,6 @@ func (r *Runtime) RestoreContainer(ctx context.Context, rSpec *spec.Spec, config
 	// In that case reset ConmonPidFile to be set to the default value later.
 	if strings.HasPrefix(ctr.config.ConmonPidFile, r.storageConfig.RunRoot) {
 		ctr.config.ConmonPidFile = ""
-	}
-
-	// If the path to PidFile starts with the default value (RunRoot), then
-	// the user has not specified '--pidfile' during run or create (probably).
-	// In that case reset PidFile to be set to the default value later.
-	if strings.HasPrefix(ctr.config.PidFile, r.storageConfig.RunRoot) {
-		ctr.config.PidFile = ""
 	}
 
 	return r.setupContainer(ctx, ctr)
@@ -176,7 +139,6 @@ func (r *Runtime) initContainerVariables(rSpec *spec.Spec, config *ContainerConf
 		}
 		ctr.config.ShmSize = size
 		ctr.config.StopSignal = 15
-
 		ctr.config.StopTimeout = r.config.Engine.StopTimeout
 	} else {
 		// This is a restore from an imported checkpoint
@@ -216,11 +178,7 @@ func (r *Runtime) initContainerVariables(rSpec *spec.Spec, config *ContainerConf
 }
 
 func (r *Runtime) newContainer(ctx context.Context, rSpec *spec.Spec, options ...CtrCreateOption) (*Container, error) {
-	var ctr *Container
-	var err error
-
-	ctr, err = r.initContainerVariables(rSpec, nil)
-
+	ctr, err := r.initContainerVariables(rSpec, nil)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error initializing container variables")
 	}
@@ -239,9 +197,7 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 	if err := ctr.validate(); err != nil {
 		return nil, err
 	}
-	if ctr.config.IsInfra {
-		ctr.config.StopTimeout = 10
-	}
+
 	// normalize the networks to names
 	// ocicni only knows about cni names so we have to make
 	// sure we do not use ids internally
@@ -255,20 +211,6 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 			netNames = append(netNames, netName)
 		}
 		ctr.config.Networks = netNames
-	}
-
-	// https://github.com/containers/podman/issues/11285
-	// normalize the networks aliases to use network names and never ids
-	if len(ctr.config.NetworkAliases) > 0 {
-		netAliases := make(map[string][]string, len(ctr.config.NetworkAliases))
-		for nameOrID, aliases := range ctr.config.NetworkAliases {
-			netName, err := network.NormalizeName(r.config, nameOrID)
-			if err != nil {
-				return nil, err
-			}
-			netAliases[netName] = aliases
-		}
-		ctr.config.NetworkAliases = netAliases
 	}
 
 	// Inhibit shutdown until creation succeeds
@@ -322,6 +264,15 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		}
 	}
 
+	if ctr.config.Name == "" {
+		name, err := r.generateName()
+		if err != nil {
+			return nil, err
+		}
+
+		ctr.config.Name = name
+	}
+
 	// Check CGroup parent sanity, and set it if it was not set.
 	// Only if we're actually configuring CGroups.
 	if !ctr.config.NoCgroups {
@@ -329,7 +280,7 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		switch r.config.Engine.CgroupManager {
 		case config.CgroupfsCgroupsManager:
 			if ctr.config.CgroupParent == "" {
-				if pod != nil && pod.config.UsePodCgroup && !ctr.IsInfra() {
+				if pod != nil && pod.config.UsePodCgroup {
 					podCgroup, err := pod.CgroupPath()
 					if err != nil {
 						return nil, errors.Wrapf(err, "error retrieving pod %s cgroup", pod.ID())
@@ -337,11 +288,8 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 					if podCgroup == "" {
 						return nil, errors.Wrapf(define.ErrInternal, "pod %s cgroup is not set", pod.ID())
 					}
-					canUseCgroup := !rootless.IsRootless() || isRootlessCgroupSet(podCgroup)
-					if canUseCgroup {
-						ctr.config.CgroupParent = podCgroup
-					}
-				} else if !rootless.IsRootless() {
+					ctr.config.CgroupParent = podCgroup
+				} else {
 					ctr.config.CgroupParent = CgroupfsDefaultCgroupParent
 				}
 			} else if strings.HasSuffix(path.Base(ctr.config.CgroupParent), ".slice") {
@@ -350,7 +298,7 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		case config.SystemdCgroupsManager:
 			if ctr.config.CgroupParent == "" {
 				switch {
-				case pod != nil && pod.config.UsePodCgroup && !ctr.IsInfra():
+				case pod != nil && pod.config.UsePodCgroup:
 					podCgroup, err := pod.CgroupPath()
 					if err != nil {
 						return nil, errors.Wrapf(err, "error retrieving pod %s cgroup", pod.ID())
@@ -367,10 +315,6 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		default:
 			return nil, errors.Wrapf(define.ErrInvalidArg, "unsupported CGroup manager: %s - cannot validate cgroup parent", r.config.Engine.CgroupManager)
 		}
-	}
-
-	if ctr.config.Timezone == "" {
-		ctr.config.Timezone = r.config.Containers.TZ
 	}
 
 	if ctr.restoreFromCheckpoint {
@@ -412,7 +356,7 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		return nil, err
 	}
 	for _, secr := range ctr.config.Secrets {
-		err = ctr.extractSecretToCtrStorage(secr)
+		err = ctr.extractSecretToCtrStorage(secr.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -420,10 +364,6 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 
 	if ctr.config.ConmonPidFile == "" {
 		ctr.config.ConmonPidFile = filepath.Join(ctr.state.RunDir, "conmon.pid")
-	}
-
-	if ctr.config.PidFile == "" {
-		ctr.config.PidFile = filepath.Join(ctr.state.RunDir, "pidfile")
 	}
 
 	// Go through named volumes and add them.
@@ -464,15 +404,8 @@ func (r *Runtime) setupContainer(ctx context.Context, ctr *Container) (_ *Contai
 		ctrNamedVolumes = append(ctrNamedVolumes, newVol)
 	}
 
-	switch ctr.config.LogDriver {
-	case define.NoLogging:
-		break
-	case define.JournaldLogging:
-		ctr.initializeJournal(ctx)
-	default:
-		if ctr.config.LogPath == "" {
-			ctr.config.LogPath = filepath.Join(ctr.config.StaticDir, "ctr.log")
-		}
+	if ctr.config.LogPath == "" && ctr.config.LogDriver != define.JournaldLogging && ctr.config.LogDriver != define.NoLogging {
+		ctr.config.LogPath = filepath.Join(ctr.config.StaticDir, "ctr.log")
 	}
 
 	if !MountExists(ctr.config.Spec.Mounts, "/dev/shm") && ctr.config.ShmDir == "" {
@@ -633,15 +566,6 @@ func (r *Runtime) removeContainer(ctx context.Context, c *Container, force, remo
 		// exit code properly, but it's still stopped.
 		if err := c.stop(c.StopTimeout()); err != nil && errors.Cause(err) != define.ErrConmonDead {
 			return errors.Wrapf(err, "cannot remove container %s as it could not be stopped", c.ID())
-		}
-
-		// We unlocked as part of stop() above - there's a chance someone
-		// else got in and removed the container before we reacquired the
-		// lock.
-		// Do a quick ping of the database to check if the container
-		// still exists.
-		if ok, _ := r.state.HasContainer(c.ID()); !ok {
-			return nil
 		}
 	}
 
@@ -835,10 +759,7 @@ func (r *Runtime) evictContainer(ctx context.Context, idOrName string, removeVol
 			return id, err
 		}
 
-		infraID, err := pod.infraContainerID()
-		if err != nil {
-			return "", err
-		}
+		infraID := pod.state.InfraContainerID
 		if c.ID() == infraID {
 			return id, errors.Errorf("container %s is the infra container of pod %s and cannot be removed without removing the pod", c.ID(), pod.ID())
 		}
@@ -922,18 +843,6 @@ func (r *Runtime) LookupContainer(idOrName string) (*Container, error) {
 		return nil, define.ErrRuntimeStopped
 	}
 	return r.state.LookupContainer(idOrName)
-}
-
-// LookupContainerId looks up a container id by its name or a partial ID
-// If a partial ID is not unique, an error will be returned
-func (r *Runtime) LookupContainerID(idOrName string) (string, error) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-
-	if !r.valid {
-		return "", define.ErrRuntimeStopped
-	}
-	return r.state.LookupContainerID(idOrName)
 }
 
 // GetContainers retrieves all containers from the state

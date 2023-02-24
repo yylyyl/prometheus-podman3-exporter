@@ -15,15 +15,15 @@ import (
 	"github.com/containers/buildah/util"
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/idtools"
+	"github.com/docker/docker/pkg/archive"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
-func (c *Container) copyFromArchive(ctx context.Context, path string, chown bool, rename map[string]string, reader io.Reader) (func() error, error) {
+func (c *Container) copyFromArchive(ctx context.Context, path string, reader io.Reader) (func() error, error) {
 	var (
 		mountPoint   string
 		resolvedRoot string
@@ -62,16 +62,13 @@ func (c *Container) copyFromArchive(ctx context.Context, path string, chown bool
 		}
 	}
 
-	var idPair *idtools.IDPair
-	if chown {
-		// Make sure we chown the files to the container's main user and group ID.
-		user, err := getContainerUser(c, mountPoint)
-		if err != nil {
-			unmount()
-			return nil, err
-		}
-		idPair = &idtools.IDPair{UID: int(user.UID), GID: int(user.GID)}
+	// Make sure we chown the files to the container's main user and group ID.
+	user, err := getContainerUser(c, mountPoint)
+	if err != nil {
+		unmount()
+		return nil, err
 	}
+	idPair := idtools.IDPair{UID: int(user.UID), GID: int(user.GID)}
 
 	decompressed, err := archive.DecompressStream(reader)
 	if err != nil {
@@ -87,9 +84,8 @@ func (c *Container) copyFromArchive(ctx context.Context, path string, chown bool
 		putOptions := buildahCopiah.PutOptions{
 			UIDMap:     c.config.IDMappings.UIDMap,
 			GIDMap:     c.config.IDMappings.GIDMap,
-			ChownDirs:  idPair,
-			ChownFiles: idPair,
-			Rename:     rename,
+			ChownDirs:  &idPair,
+			ChownFiles: &idPair,
 		}
 
 		return c.joinMountAndExec(ctx,
@@ -174,7 +170,7 @@ func (c *Container) copyToArchive(ctx context.Context, path string, writer io.Wr
 
 // getContainerUser returns the specs.User and ID mappings of the container.
 func getContainerUser(container *Container, mountPoint string) (specs.User, error) {
-	userspec := container.config.User
+	userspec := container.Config().User
 
 	uid, gid, _, err := chrootuser.GetUser(mountPoint, userspec)
 	u := specs.User{
@@ -241,32 +237,21 @@ func (c *Container) joinMountAndExec(ctx context.Context, f func() error) error 
 		}
 		defer mountFD.Close()
 
-		inHostPidNS, err := c.inHostPidNS()
+		pidFD, err := getFD(PIDNS)
 		if err != nil {
-			errChan <- errors.Wrap(err, "checking inHostPidNS")
+			errChan <- err
 			return
 		}
-		var pidFD *os.File
-		if !inHostPidNS {
-			pidFD, err = getFD(PIDNS)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			defer pidFD.Close()
-		}
-
+		defer pidFD.Close()
 		if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 			errChan <- err
 			return
 		}
-
-		if pidFD != nil {
-			if err := unix.Setns(int(pidFD.Fd()), unix.CLONE_NEWPID); err != nil {
-				errChan <- err
-				return
-			}
+		if err := unix.Setns(int(pidFD.Fd()), unix.CLONE_NEWPID); err != nil {
+			errChan <- err
+			return
 		}
+
 		if err := unix.Setns(int(mountFD.Fd()), unix.CLONE_NEWNS); err != nil {
 			errChan <- err
 			return

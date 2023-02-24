@@ -54,7 +54,7 @@ func BootTime() (int64, error) {
 
 	btimeSec, err := strconv.ParseInt(btimeStr, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("error parsing boot time from /proc/stat: %w", err)
+		return 0, fmt.Errorf("error parsing boot time from /proc/stat: %s", err)
 	}
 	bootTime = &btimeSec
 	return btimeSec, nil

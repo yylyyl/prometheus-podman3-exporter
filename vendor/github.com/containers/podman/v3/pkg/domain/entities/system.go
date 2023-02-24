@@ -11,10 +11,9 @@ import (
 
 // ServiceOptions provides the input for starting an API Service
 type ServiceOptions struct {
-	URI         string         // Path to unix domain socket service should listen on
-	Timeout     time.Duration  // duration of inactivity the service should wait before shutting down
-	Command     *cobra.Command // CLI command provided. Used in V1 code
-	CorsHeaders string         // CORS headers
+	URI     string         // Path to unix domain socket service should listen on
+	Timeout time.Duration  // duration of inactivity the service should wait before shutting down
+	Command *cobra.Command // CLI command provided. Used in V1 code
 }
 
 // SystemPruneOptions provides options to prune system.
@@ -97,11 +96,6 @@ type SystemVersionReport struct {
 	Client *define.Version `json:",omitempty"`
 	// May be populated, when in tunnel mode
 	Server *define.Version `json:",omitempty"`
-}
-
-// SystemUnshareOptions describes the options for the unshare command
-type SystemUnshareOptions struct {
-	RootlessCNI bool
 }
 
 type ComponentVersion struct {

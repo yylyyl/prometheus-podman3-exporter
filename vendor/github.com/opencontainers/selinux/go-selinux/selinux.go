@@ -1,7 +1,7 @@
 package selinux
 
 import (
-	"errors"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -11,10 +11,9 @@ const (
 	Permissive = 0
 	// Disabled constant to indicate SELinux is disabled
 	Disabled = -1
-	// maxCategory is the maximum number of categories used within containers
-	maxCategory = 1024
+
 	// DefaultCategoryRange is the upper bound on the category range
-	DefaultCategoryRange = uint32(maxCategory)
+	DefaultCategoryRange = uint32(1024)
 )
 
 var (
@@ -38,8 +37,6 @@ var (
 
 	// CategoryRange allows the upper bound on the category range to be adjusted
 	CategoryRange = DefaultCategoryRange
-
-	privContainerMountLabel string
 )
 
 // Context is a representation of the SELinux label broken into 4 parts
@@ -255,8 +252,6 @@ func CopyLevel(src, dest string) (string, error) {
 // Chcon changes the fpath file object to the SELinux label label.
 // If fpath is a directory and recurse is true, then Chcon walks the
 // directory tree setting the label.
-//
-// The fpath itself is guaranteed to be relabeled last.
 func Chcon(fpath string, label string, recurse bool) error {
 	return chcon(fpath, label, recurse)
 }
@@ -280,11 +275,4 @@ func DisableSecOpt() []string {
 // file.
 func GetDefaultContextWithLevel(user, level, scon string) (string, error) {
 	return getDefaultContextWithLevel(user, level, scon)
-}
-
-// PrivContainerMountLabel returns mount label for privileged containers
-func PrivContainerMountLabel() string {
-	// Make sure label is initialized.
-	_ = label("")
-	return privContainerMountLabel
 }

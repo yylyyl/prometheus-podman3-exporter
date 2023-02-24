@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,12 +13,12 @@ import (
 	"syscall"
 
 	"github.com/containers/buildah/define"
-	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/pkg/shortnames"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	"github.com/containers/image/v5/signature"
+	is "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
@@ -45,7 +46,7 @@ var (
 	}
 )
 
-// resolveName checks if name is a valid image name, and if that name doesn't
+// ResolveName checks if name is a valid image name, and if that name doesn't
 // include a domain portion, returns a list of the names which it might
 // correspond to in the set of configured registries, the transport used to
 // pull the image, and a boolean which is true iff
@@ -58,7 +59,7 @@ var (
 //
 // NOTE: The "list of search registries is empty" check does not count blocked registries,
 // and neither the implied "localhost" nor a possible firstRegistry are counted
-func resolveName(name string, sc *types.SystemContext, store storage.Store) ([]string, string, bool, error) {
+func ResolveName(name string, firstRegistry string, sc *types.SystemContext, store storage.Store) ([]string, string, bool, error) {
 	if name == "" {
 		return nil, "", false, nil
 	}
@@ -111,6 +112,16 @@ func resolveName(name string, sc *types.SystemContext, store storage.Store) ([]s
 	searchRegistriesAreEmpty := len(registries) == 0
 
 	var candidates []string
+	// Set the first registry if requested.
+	if firstRegistry != "" && firstRegistry != "localhost" {
+		middle := ""
+		if prefix, ok := RegistryDefaultPathPrefix[firstRegistry]; ok && !strings.ContainsRune(name, '/') {
+			middle = prefix
+		}
+		candidate := path.Join(firstRegistry, middle, name)
+		candidates = append(candidates, candidate)
+	}
+
 	// Local short-name resolution.
 	namedCandidates, err := shortnames.ResolveLocally(sc, name)
 	if err != nil {
@@ -123,15 +134,21 @@ func resolveName(name string, sc *types.SystemContext, store storage.Store) ([]s
 	return candidates, DefaultTransport, searchRegistriesAreEmpty, nil
 }
 
+// StartsWithValidTransport validates the name starts with Buildah supported transport
+// to avoid the corner case image name same as the transport name
+func StartsWithValidTransport(name string) bool {
+	return strings.HasPrefix(name, "dir:") || strings.HasPrefix(name, "docker://") || strings.HasPrefix(name, "docker-archive:") || strings.HasPrefix(name, "docker-daemon:") || strings.HasPrefix(name, "oci:") || strings.HasPrefix(name, "oci-archive:")
+}
+
 // ExpandNames takes unqualified names, parses them as image names, and returns
 // the fully expanded result, including a tag.  Names which don't include a registry
 // name will be marked for the most-preferred registry (i.e., the first one in our
 // configuration).
-func ExpandNames(names []string, systemContext *types.SystemContext, store storage.Store) ([]string, error) {
+func ExpandNames(names []string, firstRegistry string, systemContext *types.SystemContext, store storage.Store) ([]string, error) {
 	expanded := make([]string, 0, len(names))
 	for _, n := range names {
 		var name reference.Named
-		nameList, _, _, err := resolveName(n, systemContext, store)
+		nameList, _, _, err := ResolveName(n, firstRegistry, systemContext, store)
 		if err != nil {
 			return nil, errors.Wrapf(err, "error parsing name %q", n)
 		}
@@ -155,34 +172,45 @@ func ExpandNames(names []string, systemContext *types.SystemContext, store stora
 }
 
 // FindImage locates the locally-stored image which corresponds to a given name.
-// Please note that the `firstRegistry` argument has been deprecated and has no
-// effect anymore.
 func FindImage(store storage.Store, firstRegistry string, systemContext *types.SystemContext, image string) (types.ImageReference, *storage.Image, error) {
-	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	var ref types.ImageReference
+	var img *storage.Image
+	var err error
+	names, _, _, err := ResolveName(image, firstRegistry, systemContext, store)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrapf(err, "error parsing name %q", image)
 	}
-
-	localImage, _, err := runtime.LookupImage(image, nil)
-	if err != nil {
-		return nil, nil, err
+	for _, name := range names {
+		ref, err = is.Transport.ParseStoreReference(store, name)
+		if err != nil {
+			logrus.Debugf("error parsing reference to image %q: %v", name, err)
+			continue
+		}
+		img, err = is.Transport.GetStoreImage(store, ref)
+		if err != nil {
+			img2, err2 := store.Image(name)
+			if err2 != nil {
+				logrus.Debugf("error locating image %q: %v", name, err2)
+				continue
+			}
+			img = img2
+		}
+		break
 	}
-	ref, err := localImage.StorageReference()
-	if err != nil {
-		return nil, nil, err
+	if ref == nil || img == nil {
+		return nil, nil, errors.Wrapf(err, "error locating image with name %q (%v)", image, names)
 	}
-
-	return ref, localImage.StorageImage(), nil
+	return ref, img, nil
 }
 
-// resolveNameToReferences tries to create a list of possible references
+// ResolveNameToReferences tries to create a list of possible references
 // (including their transports) from the provided image name.
 func ResolveNameToReferences(
 	store storage.Store,
 	systemContext *types.SystemContext,
 	image string,
 ) (refs []types.ImageReference, err error) {
-	names, transport, _, err := resolveName(image, systemContext, store)
+	names, transport, _, err := ResolveName(image, "", systemContext, store)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error parsing name %q", image)
 	}
@@ -205,26 +233,16 @@ func ResolveNameToReferences(
 	return refs, nil
 }
 
-// AddImageNames adds the specified names to the specified image.  Please note
-// that the `firstRegistry` argument has been deprecated and has no effect
-// anymore.
+// AddImageNames adds the specified names to the specified image.
 func AddImageNames(store storage.Store, firstRegistry string, systemContext *types.SystemContext, image *storage.Image, addNames []string) error {
-	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	names, err := ExpandNames(addNames, firstRegistry, systemContext, store)
 	if err != nil {
 		return err
 	}
-
-	localImage, _, err := runtime.LookupImage(image.ID, nil)
+	err = store.SetNames(image.ID, append(image.Names, names...))
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "error adding names (%v) to image %q", names, image.ID)
 	}
-
-	for _, tag := range addNames {
-		if err := localImage.Tag(tag); err != nil {
-			return errors.Wrapf(err, "error tagging image %s", image.ID)
-		}
-	}
-
 	return nil
 }
 
@@ -255,6 +273,11 @@ func Runtime() string {
 	runtime := os.Getenv("BUILDAH_RUNTIME")
 	if runtime != "" {
 		return runtime
+	}
+
+	// Need to switch default until runc supports cgroups v2
+	if unified, _ := IsCgroup2UnifiedMode(); unified {
+		return "crun"
 	}
 
 	conf, err := config.Default()
@@ -475,14 +498,4 @@ func (m byDestination) parts(i int) int {
 func SortMounts(m []specs.Mount) []specs.Mount {
 	sort.Sort(byDestination(m))
 	return m
-}
-
-func VerifyTagName(imageSpec string) (types.ImageReference, error) {
-	ref, err := alltransports.ParseImageName(imageSpec)
-	if err != nil {
-		if ref, err = alltransports.ParseImageName(DefaultTransport + imageSpec); err != nil {
-			return nil, err
-		}
-	}
-	return ref, nil
 }

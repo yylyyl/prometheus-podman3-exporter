@@ -6,6 +6,7 @@ import (
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/pkg/bindings/pods"
 	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/containers/podman/v3/pkg/util"
 	"github.com/pkg/errors"
 )
@@ -40,16 +41,6 @@ func (ic *ContainerEngine) PodKill(ctx context.Context, namesOrIds []string, opt
 		reports = append(reports, response)
 	}
 	return reports, nil
-}
-
-func (ic *ContainerEngine) PodLogs(_ context.Context, nameOrIDs string, options entities.PodLogsOptions) error {
-	// PodLogsOptions are similar but contains few extra fields like ctrName
-	// So cast other values as is so we can re-use the code
-	containerLogsOpts := entities.PodLogsOptionsToContainerLogsOptions(options)
-
-	// interface only accepts slice, keep everything consistent
-	name := []string{options.ContainerName}
-	return ic.ContainerLogs(nil, name, containerLogsOpts)
 }
 
 func (ic *ContainerEngine) PodPause(ctx context.Context, namesOrIds []string, options entities.PodPauseOptions) ([]*entities.PodPauseReport, error) {
@@ -188,8 +179,10 @@ func (ic *ContainerEngine) PodPrune(ctx context.Context, opts entities.PodPruneO
 	return pods.Prune(ic.ClientCtx, nil)
 }
 
-func (ic *ContainerEngine) PodCreate(ctx context.Context, specg entities.PodSpec) (*entities.PodCreateReport, error) {
-	return pods.CreatePodFromSpec(ic.ClientCtx, &specg)
+func (ic *ContainerEngine) PodCreate(ctx context.Context, opts entities.PodCreateOptions) (*entities.PodCreateReport, error) {
+	podSpec := specgen.NewPodSpecGenerator()
+	opts.ToPodSpecGen(podSpec)
+	return pods.CreatePodFromSpec(ic.ClientCtx, podSpec, nil)
 }
 
 func (ic *ContainerEngine) PodTop(ctx context.Context, opts entities.PodTopOptions) (*entities.StringSliceReport, error) {

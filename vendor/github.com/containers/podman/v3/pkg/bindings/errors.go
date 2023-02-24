@@ -12,22 +12,15 @@ var (
 	ErrNotImplemented = errors.New("function not implemented")
 )
 
-func handleError(data []byte, unmarshalErrorInto interface{}) error {
-	if err := json.Unmarshal(data, unmarshalErrorInto); err != nil {
+func handleError(data []byte) error {
+	e := errorhandling.ErrorModel{}
+	if err := json.Unmarshal(data, &e); err != nil {
 		return err
 	}
-	return unmarshalErrorInto.(error)
+	return e
 }
 
-// Process drains the response body, and processes the HTTP status code
-// Note: Closing the response.Body is left to the caller
 func (h APIResponse) Process(unmarshalInto interface{}) error {
-	return h.ProcessWithError(unmarshalInto, &errorhandling.ErrorModel{})
-}
-
-// Process drains the response body, and processes the HTTP status code
-// Note: Closing the response.Body is left to the caller
-func (h APIResponse) ProcessWithError(unmarshalInto interface{}, unmarshalErrorInto interface{}) error {
 	data, err := ioutil.ReadAll(h.Response.Body)
 	if err != nil {
 		return errors.Wrap(err, "unable to process API response")
@@ -38,22 +31,14 @@ func (h APIResponse) ProcessWithError(unmarshalInto interface{}, unmarshalErrorI
 		}
 		return nil
 	}
-
-	if h.IsConflictError() {
-		return handleError(data, unmarshalErrorInto)
-	}
-
 	// TODO should we add a debug here with the response code?
-	return handleError(data, &errorhandling.ErrorModel{})
+	return handleError(data)
 }
 
 func CheckResponseCode(inError error) (int, error) {
-	switch e := inError.(type) {
-	case *errorhandling.ErrorModel:
-		return e.Code(), nil
-	case *errorhandling.PodConflictErrorModel:
-		return e.Code(), nil
-	default:
+	e, ok := inError.(errorhandling.ErrorModel)
+	if !ok {
 		return -1, errors.New("error is not type ErrorModel")
 	}
+	return e.Code(), nil
 }

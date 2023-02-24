@@ -37,9 +37,9 @@ type CommitOptions struct {
 //go:generate go run ../generator/generator.go AttachOptions
 // AttachOptions are optional options for attaching to containers
 type AttachOptions struct {
-	DetachKeys *string // Keys to detach from running container
-	Logs       *bool   // Flag to return all logs from container when true
-	Stream     *bool   // Flag only return container logs when false and Logs is true
+	DetachKeys *string
+	Logs       *bool
+	Stream     *bool
 }
 
 //go:generate go run ../generator/generator.go CheckpointOptions
@@ -62,7 +62,6 @@ type RestoreOptions struct {
 	Keep            *bool
 	Name            *string
 	TCPEstablished  *bool
-	Pod             *string
 }
 
 //go:generate go run ../generator/generator.go CreateOptions
@@ -71,12 +70,7 @@ type CreateOptions struct{}
 
 //go:generate go run ../generator/generator.go DiffOptions
 // DiffOptions are optional options for creating containers
-type DiffOptions struct {
-	// By the default diff will compare against the parent layer. Change the Parent if you want to compare against something else.
-	Parent *string
-	// Change the type the backend should match. This can be set to "all", "container" or "image".
-	DiffType *string
-}
+type DiffOptions struct{}
 
 //go:generate go run ../generator/generator.go ExecInspectOptions
 // ExecInspectOptions are optional options for inspecting
@@ -160,14 +154,12 @@ type RestartOptions struct {
 // StartOptions are optional options for starting containers
 type StartOptions struct {
 	DetachKeys *string
-	Recursive  *bool
 }
 
 //go:generate go run ../generator/generator.go StatsOptions
 // StatsOptions are optional options for getting stats on containers
 type StatsOptions struct {
-	Stream   *bool
-	Interval *int
+	Stream *bool
 }
 
 //go:generate go run ../generator/generator.go TopOptions
@@ -257,14 +249,4 @@ type ExecStartAndAttachOptions struct {
 type ExistsOptions struct {
 	// External checks for containers created outside of Podman
 	External *bool
-}
-
-//go:generate go run ../generator/generator.go CopyOptions
-// CopyOptions are options for copying to containers.
-type CopyOptions struct {
-	// If used with CopyFromArchive and set to true it will change ownership of files from the source tar archive
-	// to the primary uid/gid of the target container.
-	Chown *bool `schema:"copyUIDGID"`
-	// Map to translate path names.
-	Rename map[string]string
 }

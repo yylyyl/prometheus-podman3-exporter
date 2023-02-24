@@ -148,12 +148,9 @@ type ContainerRootFSConfig struct {
 	// default, but others do not.
 	CreateWorkingDir bool `json:"createWorkingDir,omitempty"`
 	// Secrets lists secrets to mount into the container
-	Secrets []*ContainerSecret `json:"secrets,omitempty"`
+	Secrets []*secrets.Secret `json:"secrets,omitempty"`
 	// SecretPath is the secrets location in storage
 	SecretsPath string `json:"secretsPath"`
-	// Volatile specifies whether the container storage can be optimized
-	// at the cost of not syncing all the dirty files in memory.
-	Volatile bool `json:"volatile,omitempty"`
 }
 
 // ContainerSecurityConfig is an embedded sub-config providing security configuration
@@ -229,12 +226,6 @@ type ContainerNetworkConfig struct {
 	// namespace
 	// These are not used unless CreateNetNS is true
 	PortMappings []ocicni.PortMapping `json:"portMappings,omitempty"`
-	// ExposedPorts are the ports which are exposed but not forwarded
-	// into the container.
-	// The map key is the port and the string slice contains the protocols,
-	// e.g. tcp and udp
-	// These are only set when exposed ports are given but not published.
-	ExposedPorts map[uint16][]string `json:"exposedPorts,omitempty"`
 	// UseImageResolvConf indicates that resolv.conf should not be
 	// bind-mounted inside the container.
 	// Conflicts with DNSServer, DNSSearch, DNSOption.
@@ -307,8 +298,6 @@ type ContainerMiscConfig struct {
 	StopSignal uint `json:"stopSignal,omitempty"`
 	// StopTimeout is the signal that will be used to stop the container
 	StopTimeout uint `json:"stopTimeout,omitempty"`
-	// Timeout is maximum time a container will run before getting the kill signal
-	Timeout uint `json:"timeout,omitempty"`
 	// Time container was created
 	CreatedTime time.Time `json:"createdTime"`
 	// CgroupManager is the cgroup manager used to create this container.
@@ -375,13 +364,4 @@ type ContainerMiscConfig struct {
 	Timezone string `json:"timezone,omitempty"`
 	// Umask is the umask inside the container.
 	Umask string `json:"umask,omitempty"`
-	// PidFile is the file that saves the pid of the container process
-	PidFile string `json:"pid_file,omitempty"`
-	// CDIDevices contains devices that use the CDI
-	CDIDevices []string `json:"cdiDevices,omitempty"`
-	// EnvSecrets are secrets that are set as environment variables
-	EnvSecrets map[string]*secrets.Secret `json:"secret_env,omitempty"`
-	// InitContainerType specifies if the container is an initcontainer
-	// and if so, what type: always or once are possible non-nil entries
-	InitContainerType string `json:"init_container_type,omitempty"`
 }

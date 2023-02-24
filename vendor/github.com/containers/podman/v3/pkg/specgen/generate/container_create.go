@@ -6,14 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	cdi "github.com/container-orchestrated-devices/container-device-interface/pkg"
-	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/podman/v3/libpod"
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/containers/podman/v3/pkg/util"
 	"github.com/containers/storage/types"
-	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -22,10 +20,10 @@ import (
 // MakeContainer creates a container based on the SpecGenerator.
 // Returns the created, container and any warnings resulting from creating the
 // container, or an error.
-func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator) (*spec.Spec, *specgen.SpecGenerator, []libpod.CtrCreateOption, error) {
+func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator) (*libpod.Container, error) {
 	rtc, err := rt.GetConfig()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
 	// If joining a pod, retrieve the pod for use.
@@ -33,7 +31,7 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 	if s.Pod != "" {
 		pod, err = rt.LookupPod(s.Pod)
 		if err != nil {
-			return nil, nil, nil, errors.Wrapf(err, "error retrieving pod %s", s.Pod)
+			return nil, errors.Wrapf(err, "error retrieving pod %s", s.Pod)
 		}
 	}
 
@@ -41,165 +39,111 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 	if s.PidNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("pid", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.PidNS = defaultNS
 	}
 	if s.IpcNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("ipc", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.IpcNS = defaultNS
 	}
 	if s.UtsNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("uts", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.UtsNS = defaultNS
 	}
 	if s.UserNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("user", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.UserNS = defaultNS
 	}
 	if s.NetNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("net", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.NetNS = defaultNS
 	}
 	if s.CgroupNS.IsDefault() {
 		defaultNS, err := GetDefaultNamespaceMode("cgroup", rtc, pod)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		s.CgroupNS = defaultNS
 	}
 
 	options := []libpod.CtrCreateOption{}
-
 	if s.ContainerCreateCommand != nil {
 		options = append(options, libpod.WithCreateCommand(s.ContainerCreateCommand))
 	}
 
-	var newImage *libimage.Image
-	var imageData *libimage.ImageData
+	var newImage *image.Image
 	if s.Rootfs != "" {
 		options = append(options, libpod.WithRootFS(s.Rootfs))
 	} else {
-		var resolvedImageName string
-		newImage, resolvedImageName, err = rt.LibimageRuntime().LookupImage(s.Image, nil)
+		newImage, err = rt.ImageRuntime().NewFromLocal(s.Image)
 		if err != nil {
-			return nil, nil, nil, err
-		}
-		imageData, err = newImage.Inspect(ctx, false)
-		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		// If the input name changed, we could properly resolve the
 		// image. Otherwise, it must have been an ID where we're
 		// defaulting to the first name or an empty one if no names are
 		// present.
-		if strings.HasPrefix(newImage.ID(), resolvedImageName) {
+		imgName := newImage.InputName
+		if s.Image == newImage.InputName && strings.HasPrefix(newImage.ID(), s.Image) {
 			names := newImage.Names()
 			if len(names) > 0 {
-				resolvedImageName = names[0]
+				imgName = names[0]
 			}
 		}
 
-		options = append(options, libpod.WithRootFSFromImage(newImage.ID(), resolvedImageName, s.RawImageName))
+		options = append(options, libpod.WithRootFSFromImage(newImage.ID(), imgName, s.RawImageName))
 	}
 	if err := s.Validate(); err != nil {
-		return nil, nil, nil, errors.Wrap(err, "invalid config provided")
+		return nil, errors.Wrap(err, "invalid config provided")
 	}
 
 	finalMounts, finalVolumes, finalOverlays, err := finalizeMounts(ctx, s, rt, rtc, newImage)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	command, err := makeCommand(ctx, s, imageData, rtc)
+	command, err := makeCommand(ctx, s, newImage, rtc)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	opts, err := createContainerOptions(ctx, rt, s, pod, finalVolumes, finalOverlays, imageData, command)
+	opts, err := createContainerOptions(ctx, rt, s, pod, finalVolumes, finalOverlays, newImage, command)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	options = append(options, opts...)
 
-	var exitCommandArgs []string
-
-	exitCommandArgs, err = CreateExitCommandArgs(rt.StorageConfig(), rtc, logrus.IsLevelEnabled(logrus.DebugLevel), s.Remove, false)
+	exitCommandArgs, err := CreateExitCommandArgs(rt.StorageConfig(), rtc, logrus.IsLevelEnabled(logrus.DebugLevel), s.Remove, false)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-
 	options = append(options, libpod.WithExitCommand(exitCommandArgs))
 
 	if len(s.Aliases) > 0 {
 		options = append(options, libpod.WithNetworkAliases(s.Aliases))
 	}
 
-	if containerType := s.InitContainerType; len(containerType) > 0 {
-		options = append(options, libpod.WithInitCtrType(containerType))
-	}
-	if len(s.Name) > 0 {
-		logrus.Debugf("setting container name %s", s.Name)
-		options = append(options, libpod.WithName(s.Name))
-	}
-	if len(s.Devices) > 0 {
-		opts = extractCDIDevices(s)
-		options = append(options, opts...)
-	}
 	runtimeSpec, err := SpecGenToOCI(ctx, s, rt, rtc, newImage, finalMounts, pod, command)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
-	return runtimeSpec, s, options, err
-}
-func ExecuteCreate(ctx context.Context, rt *libpod.Runtime, runtimeSpec *spec.Spec, s *specgen.SpecGenerator, infra bool, options ...libpod.CtrCreateOption) (*libpod.Container, error) {
-	ctr, err := rt.NewContainer(ctx, runtimeSpec, s, infra, options...)
-	if err != nil {
-		return ctr, err
-	}
-
-	return ctr, rt.PrepareVolumeOnCreateContainer(ctx, ctr)
+	return rt.NewContainer(ctx, runtimeSpec, options...)
 }
 
-func extractCDIDevices(s *specgen.SpecGenerator) []libpod.CtrCreateOption {
-	devs := make([]spec.LinuxDevice, 0, len(s.Devices))
-	var cdiDevs []string
-	var options []libpod.CtrCreateOption
-
-	for _, device := range s.Devices {
-		isCDIDevice, err := cdi.HasDevice(device.Path)
-		if err != nil {
-			logrus.Debugf("CDI HasDevice Error: %v", err)
-		}
-		if err == nil && isCDIDevice {
-			cdiDevs = append(cdiDevs, device.Path)
-			continue
-		}
-
-		devs = append(devs, device)
-	}
-
-	s.Devices = devs
-	if len(cdiDevs) > 0 {
-		options = append(options, libpod.WithCDI(cdiDevs))
-	}
-
-	return options
-}
-
-func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator, pod *libpod.Pod, volumes []*specgen.NamedVolume, overlays []*specgen.OverlayVolume, imageData *libimage.ImageData, command []string) ([]libpod.CtrCreateOption, error) {
+func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator, pod *libpod.Pod, volumes []*specgen.NamedVolume, overlays []*specgen.OverlayVolume, img *image.Image, command []string) ([]libpod.CtrCreateOption, error) {
 	var options []libpod.CtrCreateOption
 	var err error
 
@@ -217,9 +161,6 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	if s.Umask != "" {
 		options = append(options, libpod.WithUmask(s.Umask))
 	}
-	if s.Volatile {
-		options = append(options, libpod.WithVolatile())
-	}
 
 	useSystemd := false
 	switch s.Systemd {
@@ -228,8 +169,11 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	case "false":
 		break
 	case "", "true":
-		if len(command) == 0 && imageData != nil {
-			command = imageData.Config.Cmd
+		if len(command) == 0 {
+			command, err = img.Cmd(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if len(command) > 0 {
@@ -261,6 +205,11 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	}
 	if len(s.SdNotifyMode) > 0 {
 		options = append(options, libpod.WithSdNotifyMode(s.SdNotifyMode))
+	}
+
+	if len(s.Name) > 0 {
+		logrus.Debugf("setting container name %s", s.Name)
+		options = append(options, libpod.WithName(s.Name))
 	}
 	if pod != nil {
 		logrus.Debugf("adding container to pod %s", pod.Name())
@@ -326,24 +275,22 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	}
 	// If the user did not specify a workdir on the CLI, let's extract it
 	// from the image.
-	if s.WorkDir == "" && imageData != nil {
+	if s.WorkDir == "" && img != nil {
 		options = append(options, libpod.WithCreateWorkingDir())
-		s.WorkDir = imageData.Config.WorkingDir
+		wd, err := img.WorkingDir(ctx)
+		if err != nil {
+			return nil, err
+		}
+		s.WorkDir = wd
 	}
 	if s.WorkDir == "" {
 		s.WorkDir = "/"
-	}
-	if s.CreateWorkingDir {
-		options = append(options, libpod.WithCreateWorkingDir())
 	}
 	if s.StopSignal != nil {
 		options = append(options, libpod.WithStopSignal(*s.StopSignal))
 	}
 	if s.StopTimeout != nil {
 		options = append(options, libpod.WithStopTimeout(*s.StopTimeout))
-	}
-	if s.Timeout != 0 {
-		options = append(options, libpod.WithTimeout(s.Timeout))
 	}
 	if s.LogConfiguration != nil {
 		if len(s.LogConfiguration.Path) > 0 {
@@ -361,6 +308,7 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 			options = append(options, libpod.WithLogDriver(s.LogConfiguration.Driver))
 		}
 	}
+
 	// Security options
 	if len(s.SelinuxOpts) > 0 {
 		options = append(options, libpod.WithSecLabels(s.SelinuxOpts))
@@ -383,11 +331,11 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	options = append(options, libpod.WithPrivileged(s.Privileged))
 
 	// Get namespace related options
-	namespaceOpts, err := namespaceOptions(ctx, s, rt, pod, imageData)
+	namespaceOptions, err := namespaceOptions(ctx, s, rt, pod, img)
 	if err != nil {
 		return nil, err
 	}
-	options = append(options, namespaceOpts...)
+	options = append(options, namespaceOptions...)
 
 	if len(s.ConmonPidFile) > 0 {
 		options = append(options, libpod.WithConmonPidFile(s.ConmonPidFile))
@@ -414,44 +362,7 @@ func createContainerOptions(ctx context.Context, rt *libpod.Runtime, s *specgen.
 	}
 
 	if len(s.Secrets) != 0 {
-		manager, err := rt.SecretsManager()
-		if err != nil {
-			return nil, err
-		}
-		var secrs []*libpod.ContainerSecret
-		for _, s := range s.Secrets {
-			secr, err := manager.Lookup(s.Source)
-			if err != nil {
-				return nil, err
-			}
-			secrs = append(secrs, &libpod.ContainerSecret{
-				Secret: secr,
-				UID:    s.UID,
-				GID:    s.GID,
-				Mode:   s.Mode,
-				Target: s.Target,
-			})
-		}
-		options = append(options, libpod.WithSecrets(secrs))
-	}
-
-	if len(s.EnvSecrets) != 0 {
-		options = append(options, libpod.WithEnvSecrets(s.EnvSecrets))
-	}
-
-	if len(s.DependencyContainers) > 0 {
-		deps := make([]*libpod.Container, 0, len(s.DependencyContainers))
-		for _, ctr := range s.DependencyContainers {
-			depCtr, err := rt.LookupContainer(ctr)
-			if err != nil {
-				return nil, errors.Wrapf(err, "%q is not a valid container, cannot be used as a dependency", ctr)
-			}
-			deps = append(deps, depCtr)
-		}
-		options = append(options, libpod.WithDependencyCtrs(deps))
-	}
-	if s.PidFile != "" {
-		options = append(options, libpod.WithPidFile(s.PidFile))
+		options = append(options, libpod.WithSecrets(s.Secrets))
 	}
 	return options, nil
 }

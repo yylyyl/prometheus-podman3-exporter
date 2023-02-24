@@ -2,9 +2,6 @@ package specgen
 
 import (
 	"net"
-
-	"github.com/containers/podman/v3/libpod/network/types"
-	spec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 // PodBasicConfig contains basic configuration options for pods.
@@ -44,12 +41,6 @@ type PodBasicConfig struct {
 	// Conflicts with NoInfra=true.
 	// Optional.
 	InfraImage string `json:"infra_image,omitempty"`
-	// InfraName is the name that will be used for the infra container.
-	// If not set, the default set in the Libpod configuration file will be
-	// used.
-	// Conflicts with NoInfra=true.
-	// Optional.
-	InfraName string `json:"infra_name,omitempty"`
 	// SharedNamespaces instructs the pod to share a set of namespaces.
 	// Shared namespaces will be joined (by default) by every container
 	// which joins the pod.
@@ -64,14 +55,6 @@ type PodBasicConfig struct {
 	// (e.g. `podman generate systemd --new`).
 	// Optional.
 	PodCreateCommand []string `json:"pod_create_command,omitempty"`
-	// Pid sets the process id namespace of the pod
-	// Optional (defaults to private if unset). This sets the PID namespace of the infra container
-	// This configuration will then be shared with the entire pod if PID namespace sharing is enabled via --share
-	Pid Namespace `json:"pidns,omitempty"`
-	// Userns is used to indicate which kind of Usernamespace to enter.
-	// Any containers created within the pod will inherit the pod's userns settings.
-	// Optional
-	Userns Namespace `json:"userns,omitempty"`
 }
 
 // PodNetworkConfig contains networking configuration for a pod.
@@ -103,7 +86,7 @@ type PodNetworkConfig struct {
 	// container, this will forward the ports to the entire pod.
 	// Only available if NetNS is set to Bridge or Slirp.
 	// Optional.
-	PortMappings []types.PortMapping `json:"portmappings,omitempty"`
+	PortMappings []PortMapping `json:"portmappings,omitempty"`
 	// CNINetworks is a list of CNI networks that the infra container will
 	// join. As, by default, containers share their network with the infra
 	// container, these networks will effectively be joined by the
@@ -172,17 +155,6 @@ type PodSpecGenerator struct {
 	PodBasicConfig
 	PodNetworkConfig
 	PodCgroupConfig
-	PodResourceConfig
-	InfraContainerSpec *SpecGenerator `json:"-"`
-}
-
-type PodResourceConfig struct {
-	// ResourceLimits contains linux specific CPU data for the pod
-	ResourceLimits *spec.LinuxResources `json:"resource_limits,omitempty"`
-	// CPU period of the cpuset, determined by --cpus
-	CPUPeriod uint64 `json:"cpu_period,omitempty"`
-	// CPU quota of the cpuset, determined by --cpus
-	CPUQuota int64 `json:"cpu_quota,omitempty"`
 }
 
 // NewPodSpecGenerator creates a new pod spec

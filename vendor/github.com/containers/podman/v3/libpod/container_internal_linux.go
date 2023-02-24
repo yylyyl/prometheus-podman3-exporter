@@ -1,4 +1,3 @@
-//go:build linux
 // +build linux
 
 package libpod
@@ -21,7 +20,6 @@ import (
 	"time"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
-	cdi "github.com/container-orchestrated-devices/container-device-interface/pkg"
 	cnitypes "github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containers/buildah/pkg/chrootuser"
@@ -94,7 +92,11 @@ func (c *Container) prepare() error {
 		// Set up network namespace if not already set up
 		noNetNS := c.state.NetNS == nil
 		if c.config.CreateNetNS && noNetNS && !c.config.PostConfigureNetNS {
-			netNS, networkStatus, createNetNSErr = c.runtime.createNetNS(c)
+			if rootless.IsRootless() && len(c.config.Networks) > 0 {
+				netNS, networkStatus, createNetNSErr = AllocRootlessCNI(context.Background(), c)
+			} else {
+				netNS, networkStatus, createNetNSErr = c.runtime.createNetNS(c)
+			}
 			if createNetNSErr != nil {
 				return
 			}
@@ -174,6 +176,11 @@ func (c *Container) prepare() error {
 
 	// Save changes to container state
 	if err := c.save(); err != nil {
+		return err
+	}
+
+	// Make sure the workdir exists
+	if err := c.resolveWorkDir(); err != nil {
 		return err
 	}
 
@@ -348,33 +355,10 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 		return nil, err
 	}
 
-	if err := c.mountNotifySocket(g); err != nil {
-		return nil, err
-	}
-
 	// Get host UID and GID based on the container process UID and GID.
 	hostUID, hostGID, err := butil.GetHostIDs(util.IDtoolsToRuntimeSpec(c.config.IDMappings.UIDMap), util.IDtoolsToRuntimeSpec(c.config.IDMappings.GIDMap), uint32(execUser.Uid), uint32(execUser.Gid))
 	if err != nil {
 		return nil, err
-	}
-
-	// Add named volumes
-	for _, namedVol := range c.config.NamedVolumes {
-		volume, err := c.runtime.GetVolume(namedVol.Name)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error retrieving volume %s to add to container %s", namedVol.Name, c.ID())
-		}
-		mountPoint, err := volume.MountPoint()
-		if err != nil {
-			return nil, err
-		}
-		volMount := spec.Mount{
-			Type:        "bind",
-			Source:      mountPoint,
-			Destination: namedVol.Dest,
-			Options:     namedVol.Options,
-		}
-		g.AddMount(volMount)
 	}
 
 	// Check if the spec file mounts contain the options z, Z or U.
@@ -396,8 +380,14 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 			case "z":
 				fallthrough
 			case "Z":
-				if err := label.Relabel(m.Source, c.MountLabel(), label.IsShared(o)); err != nil {
-					return nil, err
+				if c.MountLabel() != "" {
+					if c.ProcessLabel() != "" {
+						if err := label.Relabel(m.Source, c.MountLabel(), label.IsShared(o)); err != nil {
+							return nil, err
+						}
+					} else {
+						logrus.Infof("Not relabeling volume %q in container %s as SELinux is disabled", m.Source, c.ID())
+					}
 				}
 
 			default:
@@ -409,6 +399,25 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 
 	g.SetProcessSelinuxLabel(c.ProcessLabel())
 	g.SetLinuxMountLabel(c.MountLabel())
+
+	// Add named volumes
+	for _, namedVol := range c.config.NamedVolumes {
+		volume, err := c.runtime.GetVolume(namedVol.Name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error retrieving volume %s to add to container %s", namedVol.Name, c.ID())
+		}
+		mountPoint, err := volume.MountPoint()
+		if err != nil {
+			return nil, err
+		}
+		volMount := spec.Mount{
+			Type:        "bind",
+			Source:      mountPoint,
+			Destination: namedVol.Dest,
+			Options:     namedVol.Options,
+		}
+		g.AddMount(volMount)
+	}
 
 	// Add bind mounts to container
 	for dstPath, srcPath := range c.state.BindMounts {
@@ -459,11 +468,11 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 	// Add image volumes as overlay mounts
 	for _, volume := range c.config.ImageVolumes {
 		// Mount the specified image.
-		img, _, err := c.runtime.LibimageRuntime().LookupImage(volume.Source, nil)
+		img, err := c.runtime.ImageRuntime().NewFromLocal(volume.Source)
 		if err != nil {
 			return nil, errors.Wrapf(err, "error creating image volume %q:%q", volume.Source, volume.Dest)
 		}
-		mountPoint, err := img.Mount(ctx, nil, "")
+		mountPoint, err := img.Mount(nil, "")
 		if err != nil {
 			return nil, errors.Wrapf(err, "error mounting image volume %q:%q", volume.Source, volume.Dest)
 		}
@@ -659,7 +668,7 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 		}
 	}
 
-	if c.config.UserNsCtr == "" && c.config.IDMappings.AutoUserNs {
+	if c.config.IDMappings.AutoUserNs {
 		if err := g.AddOrReplaceLinuxNamespace(string(spec.UserNamespace), ""); err != nil {
 			return nil, err
 		}
@@ -698,13 +707,6 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 		return nil, err
 	}
 	g.SetLinuxCgroupsPath(cgroupPath)
-
-	// Warning: CDI may alter g.Config in place.
-	if len(c.config.CDIDevices) > 0 {
-		if err = cdi.UpdateOCISpecForDevices(g.Config, c.config.CDIDevices); err != nil {
-			return nil, errors.Wrapf(err, "error setting up CDI devices")
-		}
-	}
 
 	// Mounts need to be sorted so paths will not cover other paths
 	mounts := sortMounts(g.Mounts())
@@ -757,71 +759,8 @@ func (c *Container) generateSpec(ctx context.Context) (*spec.Spec, error) {
 	if c.state.ExtensionStageHooks, err = c.setupOCIHooks(ctx, g.Config); err != nil {
 		return nil, errors.Wrapf(err, "error setting up OCI Hooks")
 	}
-	if len(c.config.EnvSecrets) > 0 {
-		manager, err := c.runtime.SecretsManager()
-		if err != nil {
-			return nil, err
-		}
-		if err != nil {
-			return nil, err
-		}
-		for name, secr := range c.config.EnvSecrets {
-			_, data, err := manager.LookupSecretData(secr.Name)
-			if err != nil {
-				return nil, err
-			}
-			g.AddProcessEnv(name, string(data))
-		}
-	}
-
-	// Pass down the LISTEN_* environment (see #10443).
-	for _, key := range []string{"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"} {
-		if val, ok := os.LookupEnv(key); ok {
-			// Force the PID to `1` since we cannot rely on (all
-			// versions of) all runtimes to do it for us.
-			if key == "LISTEN_PID" {
-				val = "1"
-			}
-			g.AddProcessEnv(key, val)
-		}
-	}
 
 	return g.Config, nil
-}
-
-// mountNotifySocket mounts the NOTIFY_SOCKET into the container if it's set
-// and if the sdnotify mode is set to container.  It also sets c.notifySocket
-// to avoid redundantly looking up the env variable.
-func (c *Container) mountNotifySocket(g generate.Generator) error {
-	notify, ok := os.LookupEnv("NOTIFY_SOCKET")
-	if !ok {
-		return nil
-	}
-	c.notifySocket = notify
-
-	if c.config.SdNotifyMode != define.SdNotifyModeContainer {
-		return nil
-	}
-
-	notifyDir := filepath.Join(c.bundlePath(), "notify")
-	logrus.Debugf("checking notify %q dir", notifyDir)
-	if err := os.MkdirAll(notifyDir, 0755); err != nil {
-		if !os.IsExist(err) {
-			return errors.Wrapf(err, "unable to create notify %q dir", notifyDir)
-		}
-	}
-	if err := label.Relabel(notifyDir, c.MountLabel(), true); err != nil {
-		return errors.Wrapf(err, "relabel failed %q", notifyDir)
-	}
-	logrus.Debugf("add bindmount notify %q dir", notifyDir)
-	if _, ok := c.state.BindMounts["/run/notify"]; !ok {
-		c.state.BindMounts["/run/notify"] = notifyDir
-	}
-
-	// Set the container's notify socket to the proxy socket created by conmon
-	g.AddProcessEnv("NOTIFY_SOCKET", "/run/notify/notify.sock")
-
-	return nil
 }
 
 // systemd expects to have /run, /run/lock and /tmp on tmpfs
@@ -948,51 +887,28 @@ func (c *Container) addNamespaceContainer(g *generate.Generator, ns LinuxNS, ctr
 }
 
 func (c *Container) exportCheckpoint(options ContainerCheckpointOptions) error {
-	if len(c.Dependencies()) == 1 {
-		// Check if the dependency is an infra container. If it is we can checkpoint
-		// the container out of the Pod.
-		if c.config.Pod == "" {
-			return errors.Errorf("cannot export checkpoints of containers with dependencies")
-		}
-
-		pod, err := c.runtime.state.Pod(c.config.Pod)
-		if err != nil {
-			return errors.Wrapf(err, "container %s is in pod %s, but pod cannot be retrieved", c.ID(), c.config.Pod)
-		}
-		infraID, err := pod.InfraContainerID()
-		if err != nil {
-			return errors.Wrapf(err, "cannot retrieve infra container ID for pod %s", c.config.Pod)
-		}
-		if c.Dependencies()[0] != infraID {
-			return errors.Errorf("cannot export checkpoints of containers with dependencies")
-		}
-	}
-	if len(c.Dependencies()) > 1 {
-		return errors.Errorf("cannot export checkpoints of containers with dependencies")
+	if len(c.Dependencies()) > 0 {
+		return errors.Errorf("Cannot export checkpoints of containers with dependencies")
 	}
 	logrus.Debugf("Exporting checkpoint image of container %q to %q", c.ID(), options.TargetFile)
 
 	includeFiles := []string{
 		"artifacts",
+		"ctr.log",
+		metadata.CheckpointDirectory,
 		metadata.ConfigDumpFile,
 		metadata.SpecDumpFile,
 		metadata.NetworkStatusFile,
 	}
 
-	if c.LogDriver() == define.KubernetesLogging ||
-		c.LogDriver() == define.JSONLogging {
-		includeFiles = append(includeFiles, "ctr.log")
-	}
 	if options.PreCheckPoint {
-		includeFiles = append(includeFiles, preCheckpointDir)
-	} else {
-		includeFiles = append(includeFiles, metadata.CheckpointDirectory)
+		includeFiles[0] = "pre-checkpoint"
 	}
 	// Get root file-system changes included in the checkpoint archive
 	var addToTarFiles []string
 	if !options.IgnoreRootfs {
 		// To correctly track deleted files, let's go through the output of 'podman diff'
-		rootFsChanges, err := c.runtime.GetDiff("", c.ID(), define.DiffContainer)
+		rootFsChanges, err := c.runtime.GetDiff("", c.ID())
 		if err != nil {
 			return errors.Wrapf(err, "error exporting root file-system diff for %q", c.ID())
 		}
@@ -1055,7 +971,7 @@ func (c *Container) exportCheckpoint(options ContainerCheckpointOptions) error {
 	}
 
 	input, err := archive.TarWithOptions(c.bundlePath(), &archive.TarOptions{
-		Compression:      options.Compression,
+		Compression:      archive.Gzip,
 		IncludeSourceDir: true,
 		IncludeFiles:     includeFiles,
 	})
@@ -1090,9 +1006,9 @@ func (c *Container) exportCheckpoint(options ContainerCheckpointOptions) error {
 	return nil
 }
 
-func (c *Container) checkpointRestoreSupported(version int) error {
-	if !criu.CheckForCriu(version) {
-		return errors.Errorf("checkpoint/restore requires at least CRIU %d", version)
+func (c *Container) checkpointRestoreSupported() error {
+	if !criu.CheckForCriu() {
+		return errors.Errorf("checkpoint/restore requires at least CRIU %d", criu.MinCriuVersion)
 	}
 	if !c.ociRuntime.SupportsCheckpoint() {
 		return errors.Errorf("configured runtime does not support checkpoint/restore")
@@ -1101,7 +1017,7 @@ func (c *Container) checkpointRestoreSupported(version int) error {
 }
 
 func (c *Container) checkpoint(ctx context.Context, options ContainerCheckpointOptions) error {
-	if err := c.checkpointRestoreSupported(criu.MinCriuVersion); err != nil {
+	if err := c.checkpointRestoreSupported(); err != nil {
 		return err
 	}
 
@@ -1149,7 +1065,6 @@ func (c *Container) checkpoint(ctx context.Context, options ContainerCheckpointO
 
 	if !options.KeepRunning && !options.PreCheckPoint {
 		c.state.State = define.ContainerStateStopped
-		c.state.Checkpointed = true
 
 		// Cleanup Storage and Network
 		if err := c.cleanup(ctx); err != nil {
@@ -1206,18 +1121,8 @@ func (c *Container) importPreCheckpoint(input string) error {
 }
 
 func (c *Container) restore(ctx context.Context, options ContainerCheckpointOptions) (retErr error) {
-	minCriuVersion := func() int {
-		if options.Pod == "" {
-			return criu.MinCriuVersion
-		}
-		return criu.PodCriuVersion
-	}()
-	if err := c.checkpointRestoreSupported(minCriuVersion); err != nil {
+	if err := c.checkpointRestoreSupported(); err != nil {
 		return err
-	}
-
-	if options.Pod != "" && !crutils.CRRuntimeSupportsPodCheckpointRestore(c.ociRuntime.Path()) {
-		return errors.Errorf("runtime %s does not support pod restore", c.ociRuntime.Path())
 	}
 
 	if !c.ensureState(define.ContainerStateConfigured, define.ContainerStateExited) {
@@ -1327,83 +1232,6 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 		}
 	}
 
-	if options.Pod != "" {
-		// Running in a Pod means that we have to change all namespace settings to
-		// the ones from the infrastructure container.
-		pod, err := c.runtime.LookupPod(options.Pod)
-		if err != nil {
-			return errors.Wrapf(err, "pod %q cannot be retrieved", options.Pod)
-		}
-
-		infraContainer, err := pod.InfraContainer()
-		if err != nil {
-			return errors.Wrapf(err, "cannot retrieved infra container from pod %q", options.Pod)
-		}
-
-		infraContainer.lock.Lock()
-		if err := infraContainer.syncContainer(); err != nil {
-			infraContainer.lock.Unlock()
-			return errors.Wrapf(err, "Error syncing infrastructure container %s status", infraContainer.ID())
-		}
-		if infraContainer.state.State != define.ContainerStateRunning {
-			if err := infraContainer.initAndStart(ctx); err != nil {
-				infraContainer.lock.Unlock()
-				return errors.Wrapf(err, "Error starting infrastructure container %s status", infraContainer.ID())
-			}
-		}
-		infraContainer.lock.Unlock()
-
-		if c.config.IPCNsCtr != "" {
-			nsPath, err := infraContainer.namespacePath(IPCNS)
-			if err != nil {
-				return errors.Wrapf(err, "cannot retrieve IPC namespace path for Pod %q", options.Pod)
-			}
-			if err := g.AddOrReplaceLinuxNamespace(string(spec.IPCNamespace), nsPath); err != nil {
-				return err
-			}
-		}
-
-		if c.config.NetNsCtr != "" {
-			nsPath, err := infraContainer.namespacePath(NetNS)
-			if err != nil {
-				return errors.Wrapf(err, "cannot retrieve network namespace path for Pod %q", options.Pod)
-			}
-			if err := g.AddOrReplaceLinuxNamespace(string(spec.NetworkNamespace), nsPath); err != nil {
-				return err
-			}
-		}
-
-		if c.config.PIDNsCtr != "" {
-			nsPath, err := infraContainer.namespacePath(PIDNS)
-			if err != nil {
-				return errors.Wrapf(err, "cannot retrieve PID namespace path for Pod %q", options.Pod)
-			}
-			if err := g.AddOrReplaceLinuxNamespace(string(spec.PIDNamespace), nsPath); err != nil {
-				return err
-			}
-		}
-
-		if c.config.UTSNsCtr != "" {
-			nsPath, err := infraContainer.namespacePath(UTSNS)
-			if err != nil {
-				return errors.Wrapf(err, "cannot retrieve UTS namespace path for Pod %q", options.Pod)
-			}
-			if err := g.AddOrReplaceLinuxNamespace(string(spec.UTSNamespace), nsPath); err != nil {
-				return err
-			}
-		}
-
-		if c.config.CgroupNsCtr != "" {
-			nsPath, err := infraContainer.namespacePath(CgroupNS)
-			if err != nil {
-				return errors.Wrapf(err, "cannot retrieve Cgroup namespace path for Pod %q", options.Pod)
-			}
-			if err := g.AddOrReplaceLinuxNamespace(string(spec.CgroupNamespace), nsPath); err != nil {
-				return err
-			}
-		}
-	}
-
 	if err := c.makeBindMounts(); err != nil {
 		return err
 	}
@@ -1483,7 +1311,6 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 	logrus.Debugf("Restored container %s", c.ID())
 
 	c.state.State = define.ContainerStateRunning
-	c.state.Checkpointed = false
 
 	if !options.Keep {
 		// Delete all checkpoint related files. At this point, in theory, all files
@@ -1517,34 +1344,6 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 	}
 
 	return c.save()
-}
-
-// Retrieves a container's "root" net namespace container dependency.
-func (c *Container) getRootNetNsDepCtr() (depCtr *Container, err error) {
-	containersVisited := map[string]int{c.config.ID: 1}
-	nextCtr := c.config.NetNsCtr
-	for nextCtr != "" {
-		// Make sure we aren't in a loop
-		if _, visited := containersVisited[nextCtr]; visited {
-			return nil, errors.New("loop encountered while determining net namespace container")
-		}
-		containersVisited[nextCtr] = 1
-
-		depCtr, err = c.runtime.state.Container(nextCtr)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error fetching dependency %s of container %s", c.config.NetNsCtr, c.ID())
-		}
-		// This should never happen without an error
-		if depCtr == nil {
-			break
-		}
-		nextCtr = depCtr.config.NetNsCtr
-	}
-
-	if depCtr == nil {
-		return nil, errors.New("unexpected error depCtr is nil without reported error from runtime state")
-	}
-	return depCtr, nil
 }
 
 // Make standard bind mounts to include in the container
@@ -1585,9 +1384,24 @@ func (c *Container) makeBindMounts() error {
 			// We want /etc/resolv.conf and /etc/hosts from the
 			// other container. Unless we're not creating both of
 			// them.
-			depCtr, err := c.getRootNetNsDepCtr()
-			if err != nil {
-				return errors.Wrapf(err, "error fetching network namespace dependency container for container %s", c.ID())
+			var (
+				depCtr  *Container
+				nextCtr string
+			)
+
+			// I don't like infinite loops, but I don't think there's
+			// a serious risk of looping dependencies - too many
+			// protections against that elsewhere.
+			nextCtr = c.config.NetNsCtr
+			for {
+				depCtr, err = c.runtime.state.Container(nextCtr)
+				if err != nil {
+					return errors.Wrapf(err, "error fetching dependency %s of container %s", c.config.NetNsCtr, c.ID())
+				}
+				nextCtr = depCtr.config.NetNsCtr
+				if nextCtr == "" {
+					break
+				}
 			}
 
 			// We need that container's bind mounts
@@ -1777,21 +1591,11 @@ rootless=%d
 			return errors.Wrapf(err, "error creating secrets mount")
 		}
 		for _, secret := range c.Secrets() {
-			secretFileName := secret.Name
-			base := "/run/secrets"
-			if secret.Target != "" {
-				secretFileName = secret.Target
-				//If absolute path for target given remove base.
-				if filepath.IsAbs(secretFileName) {
-					base = ""
-				}
-			}
 			src := filepath.Join(c.config.SecretsPath, secret.Name)
-			dest := filepath.Join(base, secretFileName)
+			dest := filepath.Join("/run/secrets", secret.Name)
 			c.state.BindMounts[dest] = src
 		}
 	}
-
 	return nil
 }
 
@@ -1819,36 +1623,35 @@ func (c *Container) generateResolvConf() (string, error) {
 		}
 	}
 
-	contents, err := ioutil.ReadFile(resolvConf)
+	// Determine the endpoint for resolv.conf in case it is a symlink
+	resolvPath, err := filepath.EvalSymlinks(resolvConf)
 	// resolv.conf doesn't have to exists
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
 
-	ns := resolvconf.GetNameservers(contents)
-	// check if systemd-resolved is used, assume it is used when 127.0.0.53 is the only nameserver
-	if len(ns) == 1 && ns[0] == "127.0.0.53" {
-		// read the actual resolv.conf file for systemd-resolved
-		resolvedContents, err := ioutil.ReadFile("/run/systemd/resolve/resolv.conf")
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return "", errors.Wrapf(err, "detected that systemd-resolved is in use, but could not locate real resolv.conf")
-			}
-		} else {
-			contents = resolvedContents
-		}
+	// Determine if symlink points to any of the systemd-resolved files
+	if strings.HasPrefix(resolvPath, "/run/systemd/resolve/") {
+		resolvPath = "/run/systemd/resolve/resolv.conf"
 	}
 
-	ipv6 := false
+	contents, err := ioutil.ReadFile(resolvPath)
+	// resolv.conf doesn't have to exists
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+
+	// Ensure that the container's /etc/resolv.conf is compatible with its
+	// network configuration.
+	// TODO: set ipv6 enable bool more sanely
+	resolv, err := resolvconf.FilterResolvDNS(contents, true, c.config.CreateNetNS)
+	if err != nil {
+		return "", errors.Wrapf(err, "error parsing host resolv.conf")
+	}
+
 	// Check if CNI gave back and DNS servers for us to add in
 	cniResponse := c.state.NetworkStatus
 	for _, i := range cniResponse {
-		for _, ip := range i.IPs {
-			// Note: only using To16() does not work since it also returns a valid ip for ipv4
-			if ip.Address.IP.To4() == nil && ip.Address.IP.To16() != nil {
-				ipv6 = true
-			}
-		}
 		if i.DNS.Nameservers != nil {
 			cniNameServers = append(cniNameServers, i.DNS.Nameservers...)
 			logrus.Debugf("adding nameserver(s) from cni response of '%q'", i.DNS.Nameservers)
@@ -1857,25 +1660,6 @@ func (c *Container) generateResolvConf() (string, error) {
 			cniSearchDomains = append(cniSearchDomains, i.DNS.Search...)
 			logrus.Debugf("adding search domain(s) from cni response of '%q'", i.DNS.Search)
 		}
-	}
-
-	if c.config.NetMode.IsSlirp4netns() {
-		ctrNetworkSlipOpts := []string{}
-		if c.config.NetworkOptions != nil {
-			ctrNetworkSlipOpts = append(ctrNetworkSlipOpts, c.config.NetworkOptions["slirp4netns"]...)
-		}
-		slirpOpts, err := parseSlirp4netnsNetworkOptions(c.runtime, ctrNetworkSlipOpts)
-		if err != nil {
-			return "", err
-		}
-		ipv6 = slirpOpts.enableIPv6
-	}
-
-	// Ensure that the container's /etc/resolv.conf is compatible with its
-	// network configuration.
-	resolv, err := resolvconf.FilterResolvDNS(contents, ipv6, c.config.CreateNetNS)
-	if err != nil {
-		return "", errors.Wrapf(err, "error parsing host resolv.conf")
 	}
 
 	dns := make([]net.IP, 0, len(c.runtime.config.Containers.DNSServers))
@@ -1902,12 +1686,7 @@ func (c *Container) generateResolvConf() (string, error) {
 		nameservers = resolvconf.GetNameservers(resolv.Content)
 		// slirp4netns has a built in DNS server.
 		if c.config.NetMode.IsSlirp4netns() {
-			slirp4netnsDNS, err := GetSlirp4netnsDNS(c.slirp4netnsSubnet)
-			if err != nil {
-				logrus.Warn("failed to determine Slirp4netns DNS: ", err.Error())
-			} else {
-				nameservers = append([]string{slirp4netnsDNS.String()}, nameservers...)
-			}
+			nameservers = append([]string{slirp4netnsDNS}, nameservers...)
 		}
 	}
 
@@ -1946,7 +1725,7 @@ func (c *Container) generateResolvConf() (string, error) {
 		return "", err
 	}
 
-	return destPath, nil
+	return filepath.Join(c.state.RunDir, "resolv.conf"), nil
 }
 
 // generateHosts creates a containers hosts file
@@ -1957,22 +1736,7 @@ func (c *Container) generateHosts(path string) (string, error) {
 	}
 	hosts := string(orig)
 	hosts += c.getHosts()
-
-	hosts = c.appendLocalhost(hosts)
-
 	return c.writeStringToRundir("hosts", hosts)
-}
-
-// based on networking mode we may want to append the localhost
-// if there isn't any record for it and also this shoud happen
-// in slirp4netns and similar network modes.
-func (c *Container) appendLocalhost(hosts string) string {
-	if !strings.Contains(hosts, "localhost") &&
-		!c.config.NetMode.IsHost() {
-		hosts += "127.0.0.1\tlocalhost\n::1\tlocalhost\n"
-	}
-
-	return hosts
 }
 
 // appendHosts appends a container's config and state pertaining to hosts to a container's
@@ -1989,7 +1753,6 @@ func (c *Container) appendHosts(path string, netCtr *Container) (string, error) 
 // and returns a string in a format that can be written to the host file
 func (c *Container) getHosts() string {
 	var hosts string
-
 	if len(c.config.HostAdd) > 0 {
 		for _, host := range c.config.HostAdd {
 			// the host format has already been verified at this point
@@ -2000,70 +1763,33 @@ func (c *Container) getHosts() string {
 
 	hosts += c.cniHosts()
 
-	// Add hostname for slirp4netns
+	// If not making a network namespace, add our own hostname.
 	if c.Hostname() != "" {
 		if c.config.NetMode.IsSlirp4netns() {
 			// When using slirp4netns, the interface gets a static IP
-			slirp4netnsIP, err := GetSlirp4netnsIP(c.slirp4netnsSubnet)
-			if err != nil {
-				logrus.Warnf("failed to determine slirp4netnsIP: %v", err.Error())
-			} else {
-				hosts += fmt.Sprintf("# used by slirp4netns\n%s\t%s %s\n", slirp4netnsIP.String(), c.Hostname(), c.config.Name)
-			}
-		}
-
-		// Do we have a network namespace?
-		netNone := false
-		if c.config.NetNsCtr == "" && !c.config.CreateNetNS {
+			hosts += fmt.Sprintf("# used by slirp4netns\n%s\t%s %s\n", slirp4netnsIP, c.Hostname(), c.config.Name)
+		} else {
+			hasNetNS := false
+			netNone := false
 			for _, ns := range c.config.Spec.Linux.Namespaces {
 				if ns.Type == spec.NetworkNamespace {
-					if ns.Path == "" {
+					hasNetNS = true
+					if ns.Path == "" && !c.config.CreateNetNS {
 						netNone = true
 					}
 					break
 				}
 			}
-		}
-		// If we are net=none (have a network namespace, but not connected to
-		// anything) add the container's name and hostname to localhost.
-		if netNone {
-			hosts += fmt.Sprintf("127.0.0.1 %s %s\n", c.Hostname(), c.config.Name)
+			if !hasNetNS {
+				// 127.0.1.1 and host's hostname to match Docker
+				osHostname, _ := os.Hostname()
+				hosts += fmt.Sprintf("127.0.1.1 %s %s %s\n", osHostname, c.Hostname(), c.config.Name)
+			}
+			if netNone {
+				hosts += fmt.Sprintf("127.0.1.1 %s %s\n", c.Hostname(), c.config.Name)
+			}
 		}
 	}
-
-	// Add gateway entry if we are not in a machine. If we use podman machine
-	// the gvproxy dns server will take care of host.containers.internal.
-	// https://github.com/containers/gvisor-tap-vsock/commit/1108ea45162281046d239047a6db9bc187e64b08
-	if !c.runtime.config.Engine.MachineEnabled {
-		var depCtr *Container
-		if c.config.NetNsCtr != "" {
-			// ignoring the error because there isn't anything to do
-			depCtr, _ = c.getRootNetNsDepCtr()
-		} else if len(c.state.NetworkStatus) != 0 {
-			depCtr = c
-		} else {
-			depCtr = nil
-		}
-
-		if depCtr != nil {
-			for _, pluginResultsRaw := range depCtr.state.NetworkStatus {
-				pluginResult, _ := cnitypes.GetResult(pluginResultsRaw)
-				for _, ip := range pluginResult.IPs {
-					hosts += fmt.Sprintf("%s host.containers.internal\n", ip.Gateway)
-				}
-			}
-		} else if c.config.NetMode.IsSlirp4netns() {
-			gatewayIP, err := GetSlirp4netnsGateway(c.slirp4netnsSubnet)
-			if err != nil {
-				logrus.Warn("failed to determine gatewayIP: ", err.Error())
-			} else {
-				hosts += fmt.Sprintf("%s host.containers.internal\n", gatewayIP.String())
-			}
-		} else {
-			logrus.Debug("network configuration does not support host.containers.internal address")
-		}
-	}
-
 	return hosts
 }
 
@@ -2486,17 +2212,6 @@ func (c *Container) generatePasswdAndGroup() (string, string, error) {
 	return passwdPath, groupPath, nil
 }
 
-func isRootlessCgroupSet(cgroup string) bool {
-	// old versions of podman were setting the CgroupParent to CgroupfsDefaultCgroupParent
-	// by default.  Avoid breaking these versions and check whether the cgroup parent is
-	// set to the default and in this case enable the old behavior.  It should not be a real
-	// problem because the default CgroupParent is usually owned by root so rootless users
-	// cannot access it.
-	// This check might be lifted in a future version of Podman.
-	// Check both that the cgroup or its parent is set to the default value (used by pods).
-	return cgroup != CgroupfsDefaultCgroupParent && filepath.Dir(cgroup) != CgroupfsDefaultCgroupParent
-}
-
 // Get cgroup path in a format suitable for the OCI spec
 func (c *Container) getOCICgroupPath() (string, error) {
 	unified, err := cgroups.IsCgroup2UnifiedMode()
@@ -2505,14 +2220,17 @@ func (c *Container) getOCICgroupPath() (string, error) {
 	}
 	cgroupManager := c.CgroupManager()
 	switch {
-	case c.config.NoCgroups:
+	case (rootless.IsRootless() && (cgroupManager == config.CgroupfsCgroupsManager || !unified)) || c.config.NoCgroups:
 		return "", nil
 	case c.config.CgroupsMode == cgroupSplit:
+		if c.config.CgroupParent != "" {
+			return c.config.CgroupParent, nil
+		}
 		selfCgroup, err := utils.GetOwnCgroup()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(selfCgroup, fmt.Sprintf("libpod-payload-%s", c.ID())), nil
+		return filepath.Join(selfCgroup, "container"), nil
 	case cgroupManager == config.SystemdCgroupsManager:
 		// When the OCI runtime is set to use Systemd as a cgroup manager, it
 		// expects cgroups to be passed as follows:
@@ -2520,11 +2238,6 @@ func (c *Container) getOCICgroupPath() (string, error) {
 		systemdCgroups := fmt.Sprintf("%s:libpod:%s", path.Base(c.config.CgroupParent), c.ID())
 		logrus.Debugf("Setting CGroups for container %s to %s", c.ID(), systemdCgroups)
 		return systemdCgroups, nil
-	case (rootless.IsRootless() && (cgroupManager == config.CgroupfsCgroupsManager || !unified)):
-		if c.config.CgroupParent == "" || !isRootlessCgroupSet(c.config.CgroupParent) {
-			return "", nil
-		}
-		fallthrough
 	case cgroupManager == config.CgroupfsCgroupsManager:
 		cgroupPath := filepath.Join(c.config.CgroupParent, fmt.Sprintf("libpod-%s", c.ID()))
 		logrus.Debugf("Setting CGroup path for container %s to %s", c.ID(), cgroupPath)
@@ -2598,7 +2311,7 @@ func (c *Container) createSecretMountDir() error {
 		oldUmask := umask.Set(0)
 		defer umask.Set(oldUmask)
 
-		if err := os.MkdirAll(src, 0755); err != nil {
+		if err := os.MkdirAll(src, 0644); err != nil {
 			return err
 		}
 		if err := label.Relabel(src, c.config.MountLabel, false); err != nil {
@@ -2612,83 +2325,4 @@ func (c *Container) createSecretMountDir() error {
 	}
 
 	return err
-}
-
-// Fix ownership and permissions of the specified volume if necessary.
-func (c *Container) fixVolumePermissions(v *ContainerNamedVolume) error {
-	vol, err := c.runtime.state.Volume(v.Name)
-	if err != nil {
-		return errors.Wrapf(err, "error retrieving named volume %s for container %s", v.Name, c.ID())
-	}
-
-	vol.lock.Lock()
-	defer vol.lock.Unlock()
-
-	// The volume may need a copy-up. Check the state.
-	if err := vol.update(); err != nil {
-		return err
-	}
-
-	// TODO: For now, I've disabled chowning volumes owned by non-Podman
-	// drivers. This may be safe, but it's really going to be a case-by-case
-	// thing, I think - safest to leave disabled now and re-enable later if
-	// there is a demand.
-	if vol.state.NeedsChown && !vol.UsesVolumeDriver() {
-		vol.state.NeedsChown = false
-
-		uid := int(c.config.Spec.Process.User.UID)
-		gid := int(c.config.Spec.Process.User.GID)
-
-		if c.config.IDMappings.UIDMap != nil {
-			p := idtools.IDPair{
-				UID: uid,
-				GID: gid,
-			}
-			mappings := idtools.NewIDMappingsFromMaps(c.config.IDMappings.UIDMap, c.config.IDMappings.GIDMap)
-			newPair, err := mappings.ToHost(p)
-			if err != nil {
-				return errors.Wrapf(err, "error mapping user %d:%d", uid, gid)
-			}
-			uid = newPair.UID
-			gid = newPair.GID
-		}
-
-		vol.state.UIDChowned = uid
-		vol.state.GIDChowned = gid
-
-		if err := vol.save(); err != nil {
-			return err
-		}
-
-		mountPoint, err := vol.MountPoint()
-		if err != nil {
-			return err
-		}
-
-		if err := os.Lchown(mountPoint, uid, gid); err != nil {
-			return err
-		}
-
-		// Make sure the new volume matches the permissions of the target directory.
-		// https://github.com/containers/podman/issues/10188
-		st, err := os.Lstat(filepath.Join(c.state.Mountpoint, v.Dest))
-		if err == nil {
-			if stat, ok := st.Sys().(*syscall.Stat_t); ok {
-				if err := os.Lchown(mountPoint, int(stat.Uid), int(stat.Gid)); err != nil {
-					return err
-				}
-			}
-			if err := os.Chmod(mountPoint, st.Mode()); err != nil {
-				return err
-			}
-			stat := st.Sys().(*syscall.Stat_t)
-			atime := time.Unix(int64(stat.Atim.Sec), int64(stat.Atim.Nsec))
-			if err := os.Chtimes(mountPoint, atime, st.ModTime()); err != nil {
-				return err
-			}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
 }

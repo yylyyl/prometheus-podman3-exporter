@@ -91,7 +91,7 @@ func createSubordinateRanges(name string) error {
 
 	// first, we should verify that ranges weren't automatically created
 	// by the distro tooling
-	ranges, err := readSubuid(name)
+	ranges, err := parseSubuid(name)
 	if err != nil {
 		return fmt.Errorf("Error while looking for subuid ranges for user %q: %v", name, err)
 	}
@@ -107,7 +107,7 @@ func createSubordinateRanges(name string) error {
 		}
 	}
 
-	ranges, err = readSubgid(name)
+	ranges, err = parseSubgid(name)
 	if err != nil {
 		return fmt.Errorf("Error while looking for subgid ranges for user %q: %v", name, err)
 	}
@@ -126,7 +126,7 @@ func createSubordinateRanges(name string) error {
 }
 
 func findNextUIDRange() (int, error) {
-	ranges, err := readSubuid("ALL")
+	ranges, err := parseSubuid("ALL")
 	if err != nil {
 		return -1, fmt.Errorf("Couldn't parse all ranges in /etc/subuid file: %v", err)
 	}
@@ -135,7 +135,7 @@ func findNextUIDRange() (int, error) {
 }
 
 func findNextGIDRange() (int, error) {
-	ranges, err := readSubgid("ALL")
+	ranges, err := parseSubgid("ALL")
 	if err != nil {
 		return -1, fmt.Errorf("Couldn't parse all ranges in /etc/subgid file: %v", err)
 	}

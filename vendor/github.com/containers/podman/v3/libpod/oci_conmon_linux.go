@@ -34,6 +34,7 @@ import (
 	"github.com/containers/podman/v3/utils"
 	"github.com/containers/storage/pkg/homedir"
 	pmount "github.com/containers/storage/pkg/mount"
+	"github.com/coreos/go-systemd/v22/activation"
 	"github.com/coreos/go-systemd/v22/daemon"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux"
@@ -46,9 +47,7 @@ import (
 const (
 	// This is Conmon's STDIO_BUF_SIZE. I don't believe we have access to it
 	// directly from the Go code, so const it here
-	// Important: The conmon attach socket uses an extra byte at the beginning of each
-	// message to specify the STREAM so we have to increase the buffer size by one
-	bufferSize = conmonConfig.BufSize + 1
+	bufferSize = conmonConfig.BufSize
 )
 
 // ConmonOCIRuntime is an OCI runtime managed by Conmon.
@@ -60,6 +59,7 @@ type ConmonOCIRuntime struct {
 	conmonEnv         []string
 	tmpDir            string
 	exitsDir          string
+	socketsDir        string
 	logSizeMax        int64
 	noPivot           bool
 	reservePorts      bool
@@ -67,6 +67,7 @@ type ConmonOCIRuntime struct {
 	supportsJSON      bool
 	supportsKVM       bool
 	supportsNoCgroups bool
+	sdNotify          bool
 	enableKeyring     bool
 }
 
@@ -105,6 +106,7 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 	runtime.logSizeMax = runtimeCfg.Containers.LogSizeMax
 	runtime.noPivot = runtimeCfg.Engine.NoPivotRoot
 	runtime.reservePorts = runtimeCfg.Engine.EnablePortReservation
+	runtime.sdNotify = runtimeCfg.Engine.SDNotify
 	runtime.enableKeyring = runtimeCfg.Containers.EnableKeyring
 
 	// TODO: probe OCI runtime for feature and enable automatically if
@@ -147,6 +149,7 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 	}
 
 	runtime.exitsDir = filepath.Join(runtime.tmpDir, "exits")
+	runtime.socketsDir = filepath.Join(runtime.tmpDir, "socket")
 
 	// Create the exit files and attach sockets directories
 	if err := os.MkdirAll(runtime.exitsDir, 0750); err != nil {
@@ -155,6 +158,13 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 			return nil, errors.Wrapf(err, "error creating OCI runtime exit files directory")
 		}
 	}
+	if err := os.MkdirAll(runtime.socketsDir, 0750); err != nil {
+		// The directory is allowed to exist
+		if !os.IsExist(err) {
+			return nil, errors.Wrap(err, "error creating OCI runtime attach sockets directory")
+		}
+	}
+
 	return runtime, nil
 }
 
@@ -289,7 +299,7 @@ func (r *ConmonOCIRuntime) UpdateContainerStatus(ctr *Container) error {
 		if err2 != nil {
 			return errors.Wrapf(err, "error getting container %s state", ctr.ID())
 		}
-		if strings.Contains(string(out), "does not exist") || strings.Contains(string(out), "No such file") {
+		if strings.Contains(string(out), "does not exist") {
 			if err := ctr.removeConmonFiles(); err != nil {
 				logrus.Debugf("unable to remove conmon files for container %s", ctr.ID())
 			}
@@ -351,12 +361,6 @@ func (r *ConmonOCIRuntime) UpdateContainerStatus(ctr *Container) error {
 		return ctr.handleExitFile(exitFile, fi)
 	}
 
-	// Handle ContainerStateStopping - keep it unless the container
-	// transitioned to no longer running.
-	if oldState == define.ContainerStateStopping && (ctr.state.State == define.ContainerStatePaused || ctr.state.State == define.ContainerStateRunning) {
-		ctr.state.State = define.ContainerStateStopping
-	}
-
 	return nil
 }
 
@@ -369,6 +373,11 @@ func (r *ConmonOCIRuntime) StartContainer(ctr *Container) error {
 		return err
 	}
 	env := []string{fmt.Sprintf("XDG_RUNTIME_DIR=%s", runtimeDir)}
+	if ctr.config.SdNotifyMode == define.SdNotifyModeContainer {
+		if notify, ok := os.LookupEnv("NOTIFY_SOCKET"); ok {
+			env = append(env, fmt.Sprintf("NOTIFY_SOCKET=%s", notify))
+		}
+	}
 	if path, ok := os.LookupEnv("PATH"); ok {
 		env = append(env, fmt.Sprintf("PATH=%s", path))
 	}
@@ -399,11 +408,6 @@ func (r *ConmonOCIRuntime) KillContainer(ctr *Container, signal uint, all bool) 
 		args = append(args, "kill", ctr.ID(), fmt.Sprintf("%d", signal))
 	}
 	if err := utils.ExecCmdWithStdStreams(os.Stdin, os.Stdout, os.Stderr, env, r.path, args...); err != nil {
-		// try updating container state but ignore errors we cant do anything if this fails.
-		r.UpdateContainerStatus(ctr)
-		if ctr.state.State == define.ContainerStateExited {
-			return nil
-		}
 		return errors.Wrapf(err, "error sending signal to container %s", ctr.ID())
 	}
 
@@ -710,10 +714,6 @@ func (r *ConmonOCIRuntime) HTTPAttach(ctr *Container, req *http.Request, w http.
 			if err != nil {
 				return err
 			}
-			// copy stdin is done, close it
-			if connErr := conn.CloseWrite(); connErr != nil {
-				logrus.Errorf("Unable to close conn: %v", connErr)
-			}
 		case <-cancel:
 			return nil
 		}
@@ -796,11 +796,7 @@ func (r *ConmonOCIRuntime) CheckpointContainer(ctr *Container, options Container
 		args = append(args, "--pre-dump")
 	}
 	if !options.PreCheckPoint && options.WithPrevious {
-		args = append(
-			args,
-			"--parent-path",
-			filepath.Join("..", preCheckpointDir),
-		)
+		args = append(args, "--parent-path", ctr.PreCheckPointPath())
 	}
 	runtimeDir, err := util.GetRuntimeDir()
 	if err != nil {
@@ -869,7 +865,7 @@ func (r *ConmonOCIRuntime) AttachSocketPath(ctr *Container) (string, error) {
 		return "", errors.Wrapf(define.ErrInvalidArg, "must provide a valid container to get attach socket path")
 	}
 
-	return filepath.Join(ctr.bundlePath(), "attach"), nil
+	return filepath.Join(r.socketsDir, ctr.ID(), "attach"), nil
 }
 
 // ExitFilePath is the path to a container's exit file.
@@ -1023,25 +1019,18 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		}
 	}
 
-	pidfile := ctr.config.PidFile
-	if pidfile == "" {
-		pidfile = filepath.Join(ctr.state.RunDir, "pidfile")
+	if ctr.config.SdNotifyMode == define.SdNotifyModeIgnore {
+		if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
+			logrus.Warnf("Error unsetting NOTIFY_SOCKET %v", err)
+		}
 	}
 
-	args := r.sharedConmonArgs(ctr, ctr.ID(), ctr.bundlePath(), pidfile, ctr.LogPath(), r.exitsDir, ociLog, ctr.LogDriver(), logTag)
-
-	if ctr.config.SdNotifyMode == define.SdNotifyModeContainer && ctr.notifySocket != "" {
-		args = append(args, fmt.Sprintf("--sdnotify-socket=%s", ctr.notifySocket))
-	}
+	args := r.sharedConmonArgs(ctr, ctr.ID(), ctr.bundlePath(), filepath.Join(ctr.state.RunDir, "pidfile"), ctr.LogPath(), r.exitsDir, ociLog, ctr.LogDriver(), logTag)
 
 	if ctr.config.Spec.Process.Terminal {
 		args = append(args, "-t")
 	} else if ctr.config.Stdin {
 		args = append(args, "-i")
-	}
-
-	if ctr.config.Timeout > 0 {
-		args = append(args, fmt.Sprintf("--timeout=%d", ctr.config.Timeout))
 	}
 
 	if !r.enableKeyring {
@@ -1062,52 +1051,14 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		}
 	}
 
-	// Pass down the LISTEN_* environment (see #10443).
-	preserveFDs := ctr.config.PreserveFDs
-	if val := os.Getenv("LISTEN_FDS"); val != "" {
-		if ctr.config.PreserveFDs > 0 {
-			logrus.Warnf("Ignoring LISTEN_FDS to preserve custom user-specified FDs")
-		} else {
-			fds, err := strconv.Atoi(val)
-			if err != nil {
-				return fmt.Errorf("converting LISTEN_FDS=%s: %w", val, err)
-			}
-			preserveFDs = uint(fds)
-		}
-	}
-
-	if preserveFDs > 0 {
-		args = append(args, formatRuntimeOpts("--preserve-fds", fmt.Sprintf("%d", preserveFDs))...)
+	if ctr.config.PreserveFDs > 0 {
+		args = append(args, formatRuntimeOpts("--preserve-fds", fmt.Sprintf("%d", ctr.config.PreserveFDs))...)
 	}
 
 	if restoreOptions != nil {
 		args = append(args, "--restore", ctr.CheckpointPath())
 		if restoreOptions.TCPEstablished {
 			args = append(args, "--runtime-opt", "--tcp-established")
-		}
-		if restoreOptions.Pod != "" {
-			mountLabel := ctr.config.MountLabel
-			processLabel := ctr.config.ProcessLabel
-			if mountLabel != "" {
-				args = append(
-					args,
-					"--runtime-opt",
-					fmt.Sprintf(
-						"--lsm-mount-context=%s",
-						mountLabel,
-					),
-				)
-			}
-			if processLabel != "" {
-				args = append(
-					args,
-					"--runtime-opt",
-					fmt.Sprintf(
-						"--lsm-profile=selinux:%s",
-						processLabel,
-					),
-				)
-			}
 		}
 	}
 
@@ -1130,11 +1081,11 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	}
 
 	// 0, 1 and 2 are stdin, stdout and stderr
-	conmonEnv := r.configureConmonEnv(ctr, runtimeDir)
+	conmonEnv, envFiles := r.configureConmonEnv(ctr, runtimeDir)
 
 	var filesToClose []*os.File
-	if preserveFDs > 0 {
-		for fd := 3; fd < int(3+preserveFDs); fd++ {
+	if ctr.config.PreserveFDs > 0 {
+		for fd := 3; fd < int(3+ctr.config.PreserveFDs); fd++ {
 			f := os.NewFile(uintptr(fd), fmt.Sprintf("fd-%d", fd))
 			filesToClose = append(filesToClose, f)
 			cmd.ExtraFiles = append(cmd.ExtraFiles, f)
@@ -1144,16 +1095,16 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 	cmd.Env = r.conmonEnv
 	// we don't want to step on users fds they asked to preserve
 	// Since 0-2 are used for stdio, start the fds we pass in at preserveFDs+3
-	cmd.Env = append(cmd.Env, fmt.Sprintf("_OCI_SYNCPIPE=%d", preserveFDs+3), fmt.Sprintf("_OCI_STARTPIPE=%d", preserveFDs+4))
+	cmd.Env = append(cmd.Env, fmt.Sprintf("_OCI_SYNCPIPE=%d", ctr.config.PreserveFDs+3), fmt.Sprintf("_OCI_STARTPIPE=%d", ctr.config.PreserveFDs+4))
 	cmd.Env = append(cmd.Env, conmonEnv...)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, childSyncPipe, childStartPipe)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, envFiles...)
 
 	if r.reservePorts && !rootless.IsRootless() && !ctr.config.NetMode.IsSlirp4netns() {
 		ports, err := bindPorts(ctr.config.PortMappings)
 		if err != nil {
 			return err
 		}
-		filesToClose = append(filesToClose, ports...)
 
 		// Leak the port we bound in the conmon process.  These fd's won't be used
 		// by the container and conmon will keep the ports busy so that another
@@ -1163,7 +1114,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 
 	if ctr.config.NetMode.IsSlirp4netns() || rootless.IsRootless() {
 		if ctr.config.PostConfigureNetNS {
-			havePortMapping := len(ctr.config.PortMappings) > 0
+			havePortMapping := len(ctr.Config().PortMappings) > 0
 			if havePortMapping {
 				ctr.rootlessPortSyncR, ctr.rootlessPortSyncW, err = os.Pipe()
 				if err != nil {
@@ -1192,8 +1143,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		}
 	}
 
-	err = startCommandGivenSelinux(cmd, ctr)
-
+	err = startCommandGivenSelinux(cmd)
 	// regardless of whether we errored or not, we no longer need the children pipes
 	childSyncPipe.Close()
 	childStartPipe.Close()
@@ -1225,13 +1175,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		// conmon not having a pid file is a valid state, so don't set it if we don't have it
 		logrus.Infof("Got Conmon PID as %d", conmonPID)
 		ctr.state.ConmonPID = conmonPID
-
-		// Send the MAINPID via sdnotify if needed.
-		switch ctr.config.SdNotifyMode {
-		case define.SdNotifyModeContainer, define.SdNotifyModeIgnore:
-		// Nothing to do or conmon takes care of it already.
-
-		default:
+		if ctr.config.SdNotifyMode != define.SdNotifyModeIgnore {
 			if sent, err := daemon.SdNotify(false, fmt.Sprintf("MAINPID=%d", conmonPID)); err != nil {
 				logrus.Errorf("Error notifying systemd of Conmon PID: %v", err)
 			} else if sent {
@@ -1251,7 +1195,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 
 // configureConmonEnv gets the environment values to add to conmon's exec struct
 // TODO this may want to be less hardcoded/more configurable in the future
-func (r *ConmonOCIRuntime) configureConmonEnv(ctr *Container, runtimeDir string) []string {
+func (r *ConmonOCIRuntime) configureConmonEnv(ctr *Container, runtimeDir string) ([]string, []*os.File) {
 	var env []string
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "LC_") {
@@ -1266,7 +1210,22 @@ func (r *ConmonOCIRuntime) configureConmonEnv(ctr *Container, runtimeDir string)
 		env = append(env, fmt.Sprintf("HOME=%s", home))
 	}
 
-	return env
+	extraFiles := make([]*os.File, 0)
+	if ctr.config.SdNotifyMode == define.SdNotifyModeContainer {
+		if notify, ok := os.LookupEnv("NOTIFY_SOCKET"); ok {
+			env = append(env, fmt.Sprintf("NOTIFY_SOCKET=%s", notify))
+		}
+	}
+	if !r.sdNotify {
+		if listenfds, ok := os.LookupEnv("LISTEN_FDS"); ok {
+			env = append(env, fmt.Sprintf("LISTEN_FDS=%s", listenfds), "LISTEN_PID=1")
+			fds := activation.Files(false)
+			extraFiles = append(extraFiles, fds...)
+		}
+	} else {
+		logrus.Debug("disabling SD notify")
+	}
+	return env, extraFiles
 }
 
 // sharedConmonArgs takes common arguments for exec and create/restore and formats them for the conmon CLI
@@ -1281,7 +1240,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 		"-p", pidPath,
 		"-n", ctr.Name(),
 		"--exit-dir", exitDir,
-		"--full-attach",
+		"--socket-dir-path", r.socketsDir,
 	}
 	if len(r.runtimeFlags) > 0 {
 		rFlags := []string{}
@@ -1348,23 +1307,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 
 // startCommandGivenSelinux starts a container ensuring to set the labels of
 // the process to make sure SELinux doesn't block conmon communication, if SELinux is enabled
-func startCommandGivenSelinux(cmd *exec.Cmd, ctr *Container) error {
-	// Make sure to unset the NOTIFY_SOCKET and reset if afterwards if needed.
-	switch ctr.config.SdNotifyMode {
-	case define.SdNotifyModeContainer, define.SdNotifyModeIgnore:
-		if ctr.notifySocket != "" {
-			if err := os.Unsetenv("NOTIFY_SOCKET"); err != nil {
-				logrus.Warnf("Error unsetting NOTIFY_SOCKET %v", err)
-			}
-
-			defer func() {
-				if err := os.Setenv("NOTIFY_SOCKET", ctr.notifySocket); err != nil {
-					logrus.Errorf("Error resetting NOTIFY_SOCKET=%s", ctr.notifySocket)
-				}
-			}()
-		}
-	}
-
+func startCommandGivenSelinux(cmd *exec.Cmd) error {
 	if !selinux.GetEnabled() {
 		return cmd.Start()
 	}

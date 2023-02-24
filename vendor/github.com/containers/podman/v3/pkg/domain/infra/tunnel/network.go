@@ -23,7 +23,7 @@ func (ic *ContainerEngine) NetworkInspect(ctx context.Context, namesOrIds []stri
 	for _, name := range namesOrIds {
 		report, err := network.Inspect(ic.ClientCtx, name, options)
 		if err != nil {
-			errModel, ok := err.(*errorhandling.ErrorModel)
+			errModel, ok := err.(errorhandling.ErrorModel)
 			if !ok {
 				return nil, nil, err
 			}
@@ -92,6 +92,5 @@ func (ic *ContainerEngine) NetworkExists(ctx context.Context, networkname string
 
 // Network prune removes unused cni networks
 func (ic *ContainerEngine) NetworkPrune(ctx context.Context, options entities.NetworkPruneOptions) ([]*entities.NetworkPruneReport, error) {
-	opts := new(network.PruneOptions).WithFilters(options.Filters)
-	return network.Prune(ic.ClientCtx, opts)
+	return network.Prune(ic.ClientCtx, nil)
 }

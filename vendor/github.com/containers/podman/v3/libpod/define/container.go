@@ -17,22 +17,3 @@ const (
 	// handling of system restart, which Podman does not yet support.
 	RestartPolicyUnlessStopped = "unless-stopped"
 )
-
-// RestartPolicyMap maps between restart-policy valid values to restart policy types
-var RestartPolicyMap = map[string]string{
-	"none":                     RestartPolicyNone,
-	RestartPolicyNo:            RestartPolicyNo,
-	RestartPolicyAlways:        RestartPolicyAlways,
-	RestartPolicyOnFailure:     RestartPolicyOnFailure,
-	RestartPolicyUnlessStopped: RestartPolicyUnlessStopped,
-}
-
-// InitContainerTypes
-const (
-	// AlwaysInitContainer is an init container than runs on each
-	// pod start (including restart)
-	AlwaysInitContainer = "always"
-	// OneShotInitContainer is a container that only runs as init once
-	// and is then deleted.
-	OneShotInitContainer = "once"
-)

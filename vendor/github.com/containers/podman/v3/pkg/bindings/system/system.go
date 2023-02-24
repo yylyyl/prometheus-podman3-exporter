@@ -31,8 +31,6 @@ func Events(ctx context.Context, eventChan chan entities.Event, cancelChan chan 
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	if cancelChan != nil {
 		go func() {
 			<-cancelChan
@@ -77,8 +75,6 @@ func Prune(ctx context.Context, options *PruneOptions) (*entities.SystemPruneRep
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return &report, response.Process(&report)
 }
 
@@ -105,7 +101,6 @@ func Version(ctx context.Context, options *VersionOptions) (*entities.SystemVers
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
 
 	if err = response.Process(&component); err != nil {
 		return nil, err
@@ -146,7 +141,5 @@ func DiskUsage(ctx context.Context, options *DiskOptions) (*entities.SystemDfRep
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return &report, response.Process(&report)
 }

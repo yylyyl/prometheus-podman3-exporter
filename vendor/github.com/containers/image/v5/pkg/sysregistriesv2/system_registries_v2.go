@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -80,7 +79,7 @@ func (e *Endpoint) rewriteReference(ref reference.Named, prefix string) (referen
 	// be dropped.
 	// https://github.com/containers/image/pull/1191#discussion_r610621608
 	if e.Location == "" {
-		if !strings.HasPrefix(prefix, "*.") {
+		if prefix[:2] != "*." {
 			return nil, fmt.Errorf("invalid prefix '%v' for empty location, should be in the format: *.example.com", prefix)
 		}
 		return ref, nil
@@ -88,7 +87,7 @@ func (e *Endpoint) rewriteReference(ref reference.Named, prefix string) (referen
 	newNamedRef = e.Location + refString[prefixLen:]
 	newParsedRef, err := reference.ParseNamed(newNamedRef)
 	if err != nil {
-		return nil, errors.Wrapf(err, "rewriting reference")
+		return nil, errors.Wrapf(err, "error rewriting reference")
 	}
 
 	return newParsedRef, nil
@@ -173,17 +172,9 @@ type V1RegistriesConf struct {
 
 // Nonempty returns true if config contains at least one configuration entry.
 func (config *V1RegistriesConf) Nonempty() bool {
-	copy := *config // A shallow copy
-	if copy.V1TOMLConfig.Search.Registries != nil && len(copy.V1TOMLConfig.Search.Registries) == 0 {
-		copy.V1TOMLConfig.Search.Registries = nil
-	}
-	if copy.V1TOMLConfig.Insecure.Registries != nil && len(copy.V1TOMLConfig.Insecure.Registries) == 0 {
-		copy.V1TOMLConfig.Insecure.Registries = nil
-	}
-	if copy.V1TOMLConfig.Block.Registries != nil && len(copy.V1TOMLConfig.Block.Registries) == 0 {
-		copy.V1TOMLConfig.Block.Registries = nil
-	}
-	return !reflect.DeepEqual(copy, V1RegistriesConf{})
+	return (len(config.V1TOMLConfig.Search.Registries) != 0 ||
+		len(config.V1TOMLConfig.Insecure.Registries) != 0 ||
+		len(config.V1TOMLConfig.Block.Registries) != 0)
 }
 
 // V2RegistriesConf is the sysregistries v2 configuration format.
@@ -212,26 +203,12 @@ type V2RegistriesConf struct {
 	ShortNameMode string `toml:"short-name-mode"`
 
 	shortNameAliasConf
-
-	// If you add any field, make sure to update Nonempty() below.
 }
 
 // Nonempty returns true if config contains at least one configuration entry.
 func (config *V2RegistriesConf) Nonempty() bool {
-	copy := *config // A shallow copy
-	if copy.Registries != nil && len(copy.Registries) == 0 {
-		copy.Registries = nil
-	}
-	if copy.UnqualifiedSearchRegistries != nil && len(copy.UnqualifiedSearchRegistries) == 0 {
-		copy.UnqualifiedSearchRegistries = nil
-	}
-	if copy.CredentialHelpers != nil && len(copy.CredentialHelpers) == 0 {
-		copy.CredentialHelpers = nil
-	}
-	if !copy.shortNameAliasConf.nonempty() {
-		copy.shortNameAliasConf = shortNameAliasConf{}
-	}
-	return !reflect.DeepEqual(copy, V2RegistriesConf{})
+	return (len(config.Registries) != 0 ||
+		len(config.UnqualifiedSearchRegistries) != 0)
 }
 
 // parsedConfig is the result of parsing, and possibly merging, configuration files;
@@ -369,7 +346,7 @@ func (config *V2RegistriesConf) postProcessRegistries() error {
 			}
 			// FIXME: allow config authors to always use Prefix.
 			// https://github.com/containers/image/pull/1191#discussion_r610622495
-			if !strings.HasPrefix(reg.Prefix, "*.") && reg.Location == "" {
+			if reg.Prefix[:2] != "*." && reg.Location == "" {
 				return &InvalidRegistries{s: "invalid condition: location is unset and prefix is not in the format: *.example.com"}
 			}
 		}
@@ -627,7 +604,7 @@ func dropInConfigs(wrapper configWrapper) ([]string, error) {
 		if err != nil && !os.IsNotExist(err) {
 			// Ignore IsNotExist errors: most systems won't have a registries.conf.d
 			// directory.
-			return nil, errors.Wrapf(err, "reading registries.conf.d")
+			return nil, errors.Wrapf(err, "error reading registries.conf.d")
 		}
 	}
 
@@ -669,7 +646,7 @@ func tryUpdatingCache(ctx *types.SystemContext, wrapper configWrapper) (*parsedC
 				return nil, err // Should never happen
 			}
 		} else {
-			return nil, errors.Wrapf(err, "loading registries configuration %q", wrapper.configPath)
+			return nil, errors.Wrapf(err, "error loading registries configuration %q", wrapper.configPath)
 		}
 	}
 
@@ -682,7 +659,7 @@ func tryUpdatingCache(ctx *types.SystemContext, wrapper configWrapper) (*parsedC
 		// Enforce v2 format for drop-in-configs.
 		dropIn, err := loadConfigFile(path, true)
 		if err != nil {
-			return nil, errors.Wrapf(err, "loading drop-in registries configuration %q", path)
+			return nil, errors.Wrapf(err, "error loading drop-in registries configuration %q", path)
 		}
 		config.updateWithConfigurationFrom(dropIn)
 	}
@@ -804,7 +781,7 @@ func refMatchingSubdomainPrefix(ref, prefix string) int {
 // (This is split from the caller primarily to make testing easier.)
 func refMatchingPrefix(ref, prefix string) int {
 	switch {
-	case strings.HasPrefix(prefix, "*."):
+	case prefix[0:2] == "*.":
 		return refMatchingSubdomainPrefix(ref, prefix)
 	case len(ref) < len(prefix):
 		return -1
@@ -924,7 +901,7 @@ func loadConfigFile(path string, forceV2 bool) (*parsedConfig, error) {
 	// https://github.com/containers/image/pull/1191#discussion_r610623829
 	for i := range res.partialV2.Registries {
 		prefix := res.partialV2.Registries[i].Prefix
-		if strings.HasPrefix(prefix, "*.") && strings.ContainsAny(prefix, "/@:") {
+		if prefix[:2] == "*." && strings.ContainsAny(prefix, "/@:") {
 			msg := fmt.Sprintf("Wildcarded prefix should be in the format: *.example.com. Current prefix %q is incorrectly formatted", prefix)
 			return nil, &InvalidRegistries{s: msg}
 		}
@@ -933,7 +910,7 @@ func loadConfigFile(path string, forceV2 bool) (*parsedConfig, error) {
 	// Parse and validate short-name aliases.
 	cache, err := newShortNameAliasCache(path, &res.partialV2.shortNameAliasConf)
 	if err != nil {
-		return nil, errors.Wrap(err, "validating short-name aliases")
+		return nil, errors.Wrap(err, "error validating short-name aliases")
 	}
 	res.aliasCache = cache
 	// Clear conf.partialV2.shortNameAliasConf to make it available for garbage collection and

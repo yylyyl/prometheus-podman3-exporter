@@ -5,10 +5,10 @@ import (
 	"path"
 	"strings"
 
-	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/podman/v3/libpod"
 	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/podman/v3/pkg/specgen"
@@ -95,12 +95,16 @@ func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) error {
 }
 
 // Produce the final command for the container.
-func makeCommand(ctx context.Context, s *specgen.SpecGenerator, imageData *libimage.ImageData, rtc *config.Config) ([]string, error) {
+func makeCommand(ctx context.Context, s *specgen.SpecGenerator, img *image.Image, rtc *config.Config) ([]string, error) {
 	finalCommand := []string{}
 
 	entrypoint := s.Entrypoint
-	if entrypoint == nil && imageData != nil {
-		entrypoint = imageData.Config.Entrypoint
+	if entrypoint == nil && img != nil {
+		newEntry, err := img.Entrypoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		entrypoint = newEntry
 	}
 
 	// Don't append the entrypoint if it is [""]
@@ -111,8 +115,12 @@ func makeCommand(ctx context.Context, s *specgen.SpecGenerator, imageData *libim
 	// Only use image command if the user did not manually set an
 	// entrypoint.
 	command := s.Command
-	if len(command) == 0 && imageData != nil && len(s.Entrypoint) == 0 {
-		command = imageData.Config.Cmd
+	if len(command) == 0 && img != nil && len(s.Entrypoint) == 0 {
+		newCmd, err := img.Cmd(ctx)
+		if err != nil {
+			return nil, err
+		}
+		command = newCmd
 	}
 
 	finalCommand = append(finalCommand, command...)
@@ -174,7 +182,7 @@ func getCGroupPermissons(unmask []string) string {
 }
 
 // SpecGenToOCI returns the base configuration for the container.
-func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *libimage.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string) (*spec.Spec, error) {
+func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *image.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string) (*spec.Spec, error) {
 	cgroupPerm := getCGroupPermissons(s.Unmask)
 
 	g, err := generate.New("linux")
@@ -201,8 +209,7 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 			Options:     []string{"rprivate", "nosuid", "noexec", "nodev", "rw"},
 		}
 		g.AddMount(sysMnt)
-	}
-	if !canMountSys {
+	} else if !canMountSys {
 		addCgroup = false
 		g.RemoveMount("/sys")
 		r := "ro"
@@ -286,9 +293,6 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 		}
 		g.AddMount(cgroupMnt)
 	}
-
-	g.Config.Linux.Personality = s.Personality
-
 	g.SetProcessCwd(s.WorkDir)
 
 	g.SetProcessArgs(finalCmd)
@@ -323,10 +327,6 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 				return nil, err
 			}
 		}
-	}
-
-	for _, dev := range s.DeviceCGroupRule {
-		g.AddLinuxResourcesDevice(true, dev.Type, dev.Major, dev.Minor, dev.Access)
 	}
 
 	BlockAccessToKernelFilesystems(s.Privileged, s.PidNS.IsHost(), s.Mask, s.Unmask, &g)

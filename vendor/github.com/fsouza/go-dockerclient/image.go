@@ -291,7 +291,6 @@ func (c *Client) PushImage(opts PushImageOptions, auth AuthConfiguration) error 
 //
 // See https://goo.gl/qkoSsn for more details.
 type PullImageOptions struct {
-	All        bool
 	Repository string `qs:"fromImage"`
 	Tag        string
 	Platform   string `ver:"1.32"`

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"text/tabwriter"
 	"text/template"
 
 	"github.com/chzyer/readline"
+	"github.com/juju/ansiterm"
 	"github.com/manifoldco/promptui/list"
 	"github.com/manifoldco/promptui/screenbuf"
 )
@@ -587,8 +587,7 @@ func (s *Select) renderDetails(item interface{}) [][]byte {
 	}
 
 	var buf bytes.Buffer
-
-	w := tabwriter.NewWriter(&buf, 0, 0, 8, ' ', 0)
+	w := ansiterm.NewTabWriter(&buf, 0, 0, 8, ' ', 0)
 
 	err := s.Templates.details.Execute(w, item)
 	if err != nil {

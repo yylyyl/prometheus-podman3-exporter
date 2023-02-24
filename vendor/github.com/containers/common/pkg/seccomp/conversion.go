@@ -118,7 +118,6 @@ func specToSeccomp(spec *specs.LinuxSeccomp) (*Seccomp, error) {
 		return nil, errors.Wrap(err, "convert default action")
 	}
 	res.DefaultAction = newDefaultAction
-	res.DefaultErrnoRet = spec.DefaultErrnoRet
 
 	// Loop through all syscall blocks and convert them to the internal format
 	for _, call := range spec.Syscalls {

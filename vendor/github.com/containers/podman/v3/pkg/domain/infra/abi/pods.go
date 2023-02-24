@@ -8,6 +8,7 @@ import (
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	dfilters "github.com/containers/podman/v3/pkg/domain/filters"
 	"github.com/containers/podman/v3/pkg/signal"
+	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/containers/podman/v3/pkg/specgen/generate"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -81,46 +82,6 @@ func (ic *ContainerEngine) PodKill(ctx context.Context, namesOrIds []string, opt
 		reports = append(reports, &report)
 	}
 	return reports, nil
-}
-
-func (ic *ContainerEngine) PodLogs(ctx context.Context, nameOrID string, options entities.PodLogsOptions) error {
-	// Implementation accepts slice
-	podName := []string{nameOrID}
-	pod, err := getPodsByContext(false, options.Latest, podName, ic.Libpod)
-	if err != nil {
-		return err
-	}
-	// Get pod containers
-	podCtrs, err := pod[0].AllContainers()
-	if err != nil {
-		return err
-	}
-
-	ctrNames := []string{}
-	// Check if `kubectl pod logs -c ctrname <podname>` alike command is used
-	if options.ContainerName != "" {
-		ctrFound := false
-		for _, ctr := range podCtrs {
-			if ctr.ID() == options.ContainerName || ctr.Name() == options.ContainerName {
-				ctrNames = append(ctrNames, options.ContainerName)
-				ctrFound = true
-			}
-		}
-		if !ctrFound {
-			return errors.Wrapf(define.ErrNoSuchCtr, "container %s is not in pod %s", options.ContainerName, nameOrID)
-		}
-	} else {
-		// No container name specified select all containers
-		for _, ctr := range podCtrs {
-			ctrNames = append(ctrNames, ctr.Name())
-		}
-	}
-
-	// PodLogsOptions are similar but contains few extra fields like ctrName
-	// So cast other values as is so we can re-use the code
-	containerLogsOpts := entities.PodLogsOptionsToContainerLogsOptions(options)
-
-	return ic.ContainerLogs(ctx, ctrNames, containerLogsOpts)
 }
 
 func (ic *ContainerEngine) PodPause(ctx context.Context, namesOrIds []string, options entities.PodPauseOptions) ([]*entities.PodPauseReport, error) {
@@ -287,8 +248,10 @@ func (ic *ContainerEngine) prunePodHelper(ctx context.Context) ([]*entities.PodP
 	return reports, nil
 }
 
-func (ic *ContainerEngine) PodCreate(ctx context.Context, specg entities.PodSpec) (*entities.PodCreateReport, error) {
-	pod, err := generate.MakePod(&specg, ic.Libpod)
+func (ic *ContainerEngine) PodCreate(ctx context.Context, opts entities.PodCreateOptions) (*entities.PodCreateReport, error) {
+	podSpec := specgen.NewPodSpecGenerator()
+	opts.ToPodSpecGen(podSpec)
+	pod, err := generate.MakePod(podSpec, ic.Libpod)
 	if err != nil {
 		return nil, err
 	}

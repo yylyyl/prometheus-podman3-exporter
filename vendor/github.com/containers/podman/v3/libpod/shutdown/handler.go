@@ -18,7 +18,7 @@ var (
 	stopped    bool
 	sigChan    chan os.Signal
 	cancelChan chan bool
-	// Synchronize accesses to the map
+	// Syncronize accesses to the map
 	handlerLock sync.Mutex
 	// Definitions of all on-shutdown handlers
 	handlers map[string]func(os.Signal) error
@@ -35,7 +35,7 @@ func Start() error {
 		return nil
 	}
 
-	sigChan = make(chan os.Signal, 2)
+	sigChan = make(chan os.Signal, 1)
 	cancelChan = make(chan bool, 1)
 	stopped = false
 

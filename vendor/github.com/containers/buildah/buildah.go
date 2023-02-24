@@ -89,9 +89,6 @@ const (
 type Builder struct {
 	store storage.Store
 
-	// Logger is the logrus logger to write log messages with
-	Logger *logrus.Logger `json:"-"`
-
 	// Args define variables that users can pass at build-time to the builder
 	Args map[string]string
 	// Type is used to help identify a build container's metadata.  It
@@ -245,7 +242,7 @@ func GetBuildInfo(b *Builder) BuilderInfo {
 	}
 }
 
-// CommonBuildOptions are resources that can be defined by flags for both buildah from and build
+// CommonBuildOptions are resources that can be defined by flags for both buildah from and build-using-dockerfile
 type CommonBuildOptions = define.CommonBuildOptions
 
 // BuilderOptions are used to initialize a new Builder.
@@ -397,8 +394,7 @@ func OpenBuilder(store storage.Store, container string) (*Builder, error) {
 		return nil, errors.Errorf("container %q is not a %s container (is a %q container)", container, define.Package, b.Type)
 	}
 	b.store = store
-	b.fixupConfig(nil)
-	b.setupLogger()
+	b.fixupConfig()
 	return b, nil
 }
 
@@ -433,8 +429,7 @@ func OpenBuilderByPath(store storage.Store, path string) (*Builder, error) {
 		err = json.Unmarshal(buildstate, &b)
 		if err == nil && b.Type == containerType && builderMatchesPath(b, abs) {
 			b.store = store
-			b.fixupConfig(nil)
-			b.setupLogger()
+			b.fixupConfig()
 			return b, nil
 		}
 		if err != nil {
@@ -470,8 +465,7 @@ func OpenAllBuilders(store storage.Store) (builders []*Builder, err error) {
 		err = json.Unmarshal(buildstate, &b)
 		if err == nil && b.Type == containerType {
 			b.store = store
-			b.setupLogger()
-			b.fixupConfig(nil)
+			b.fixupConfig()
 			builders = append(builders, b)
 			continue
 		}

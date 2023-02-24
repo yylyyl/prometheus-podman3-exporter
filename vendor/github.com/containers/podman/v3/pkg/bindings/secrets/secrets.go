@@ -18,16 +18,10 @@ func List(ctx context.Context, options *ListOptions) ([]*entities.SecretInfoRepo
 	if err != nil {
 		return nil, err
 	}
-	params, err := options.ToParams()
-	if err != nil {
-		return nil, err
-	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/secrets/json", params, nil)
+	response, err := conn.DoRequest(nil, http.MethodGet, "/secrets/json", nil, nil)
 	if err != nil {
 		return secrs, err
 	}
-	defer response.Body.Close()
-
 	return secrs, response.Process(&secrs)
 }
 
@@ -44,8 +38,6 @@ func Inspect(ctx context.Context, nameOrID string, options *InspectOptions) (*en
 	if err != nil {
 		return inspect, err
 	}
-	defer response.Body.Close()
-
 	return inspect, response.Process(&inspect)
 }
 
@@ -60,8 +52,6 @@ func Remove(ctx context.Context, nameOrID string) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -84,7 +74,5 @@ func Create(ctx context.Context, reader io.Reader, options *CreateOptions) (*ent
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return create, response.Process(&create)
 }

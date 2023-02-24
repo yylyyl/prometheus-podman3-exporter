@@ -7,19 +7,11 @@ import (
 	"time"
 
 	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/events"
 	"github.com/containers/podman/v3/libpod/logs"
 	"github.com/hpcloud/tail/watch"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
-
-// logDrivers stores the currently available log drivers, do not modify
-var logDrivers []string
-
-func init() {
-	logDrivers = append(logDrivers, define.KubernetesLogging, define.NoLogging)
-}
 
 // Log is a runtime function that can read one or more container logs.
 func (r *Runtime) Log(ctx context.Context, containers []*Container, options *logs.LogOptions, logChannel chan *logs.LogLine) error {
@@ -63,7 +55,7 @@ func (c *Container) readFromLogFile(ctx context.Context, options *logs.LogOption
 		for _, nll := range tailLog {
 			nll.CID = c.ID()
 			nll.CName = c.Name()
-			if nll.Since(options.Since) && nll.Until(options.Until) {
+			if nll.Since(options.Since) {
 				logChannel <- nll
 			}
 		}
@@ -83,7 +75,7 @@ func (c *Container) readFromLogFile(ctx context.Context, options *logs.LogOption
 			}
 			nll, err := logs.NewLogLine(line.Text)
 			if err != nil {
-				logrus.Errorf("Error getting new log line: %v", err)
+				logrus.Error(err)
 				continue
 			}
 			if nll.Partial() {
@@ -95,55 +87,34 @@ func (c *Container) readFromLogFile(ctx context.Context, options *logs.LogOption
 			}
 			nll.CID = c.ID()
 			nll.CName = c.Name()
-			if nll.Since(options.Since) && nll.Until(options.Until) {
+			if nll.Since(options.Since) {
 				logChannel <- nll
 			}
 		}
 	}()
 	// Check if container is still running or paused
 	if options.Follow {
-		// If the container isn't running or if we encountered an error
-		// getting its state, instruct the logger to read the file
-		// until EOF.
-		state, err := c.State()
-		if err != nil || state != define.ContainerStateRunning {
-			if err != nil && errors.Cause(err) != define.ErrNoSuchCtr {
-				logrus.Errorf("Error getting container state: %v", err)
-			}
-			go func() {
-				// Make sure to wait at least for the poll duration
-				// before stopping the file logger (see #10675).
-				time.Sleep(watch.POLL_DURATION)
-				tailError := t.StopAtEOF()
-				if tailError != nil && tailError.Error() != "tail: stop at eof" {
-					logrus.Errorf("Error stopping logger: %v", tailError)
-				}
-			}()
-			return nil
-		}
-
-		// The container is running, so we need to wait until the container exited
 		go func() {
-			eventChannel := make(chan *events.Event)
-			eventOptions := events.ReadOptions{
-				EventChannel: eventChannel,
-				Filters:      []string{"event=died", "container=" + c.ID()},
-				Stream:       true,
-			}
-			go func() {
-				if err := c.runtime.Events(ctx, eventOptions); err != nil {
-					logrus.Errorf("Error waiting for container to exit: %v", err)
+			for {
+				state, err := c.State()
+				time.Sleep(watch.POLL_DURATION)
+				if err != nil {
+					tailError := t.StopAtEOF()
+					if tailError != nil && fmt.Sprintf("%v", tailError) != "tail: stop at eof" {
+						logrus.Error(tailError)
+					}
+					if errors.Cause(err) != define.ErrNoSuchCtr {
+						logrus.Error(err)
+					}
+					break
 				}
-			}()
-			// Now wait for the died event and signal to finish
-			// reading the log until EOF.
-			<-eventChannel
-			// Make sure to wait at least for the poll duration
-			// before stopping the file logger (see #10675).
-			time.Sleep(watch.POLL_DURATION)
-			tailError := t.StopAtEOF()
-			if tailError != nil && fmt.Sprintf("%v", tailError) != "tail: stop at eof" {
-				logrus.Errorf("Error stopping logger: %v", tailError)
+				if state != define.ContainerStateRunning && state != define.ContainerStatePaused {
+					tailError := t.StopAtEOF()
+					if tailError != nil && fmt.Sprintf("%v", tailError) != "tail: stop at eof" {
+						logrus.Error(tailError)
+					}
+					break
+				}
 			}
 		}()
 	}

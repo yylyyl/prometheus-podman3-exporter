@@ -82,7 +82,7 @@ func GetRootUIDGID(uidMap, gidMap []IDMap) (int, int, error) {
 	if len(uidMap) == 1 && uidMap[0].Size == 1 {
 		uid = uidMap[0].HostID
 	} else {
-		uid, err = RawToHost(0, uidMap)
+		uid, err = toHost(0, uidMap)
 		if err != nil {
 			return -1, -1, err
 		}
@@ -90,7 +90,7 @@ func GetRootUIDGID(uidMap, gidMap []IDMap) (int, int, error) {
 	if len(gidMap) == 1 && gidMap[0].Size == 1 {
 		gid = gidMap[0].HostID
 	} else {
-		gid, err = RawToHost(0, gidMap)
+		gid, err = toHost(0, gidMap)
 		if err != nil {
 			return -1, -1, err
 		}
@@ -98,14 +98,10 @@ func GetRootUIDGID(uidMap, gidMap []IDMap) (int, int, error) {
 	return uid, gid, nil
 }
 
-// RawToContainer takes an id mapping, and uses it to translate a host ID to
-// the remapped ID. If no map is provided, then the translation assumes a
-// 1-to-1 mapping and returns the passed in id.
-//
-// If you wish to map a (uid,gid) combination you should use the corresponding
-// IDMappings methods, which ensure that you are mapping the correct ID against
-// the correct mapping.
-func RawToContainer(hostID int, idMap []IDMap) (int, error) {
+// toContainer takes an id mapping, and uses it to translate a
+// host ID to the remapped ID. If no map is provided, then the translation
+// assumes a 1-to-1 mapping and returns the passed in id
+func toContainer(hostID int, idMap []IDMap) (int, error) {
 	if idMap == nil {
 		return hostID, nil
 	}
@@ -118,14 +114,10 @@ func RawToContainer(hostID int, idMap []IDMap) (int, error) {
 	return -1, fmt.Errorf("Host ID %d cannot be mapped to a container ID", hostID)
 }
 
-// RawToHost takes an id mapping and a remapped ID, and translates the ID to
-// the mapped host ID. If no map is provided, then the translation assumes a
-// 1-to-1 mapping and returns the passed in id.
-//
-// If you wish to map a (uid,gid) combination you should use the corresponding
-// IDMappings methods, which ensure that you are mapping the correct ID against
-// the correct mapping.
-func RawToHost(contID int, idMap []IDMap) (int, error) {
+// toHost takes an id mapping and a remapped ID, and translates the
+// ID to the mapped host ID. If no map is provided, then the translation
+// assumes a 1-to-1 mapping and returns the passed in id #
+func toHost(contID int, idMap []IDMap) (int, error) {
 	if idMap == nil {
 		return contID, nil
 	}
@@ -154,11 +146,11 @@ type IDMappings struct {
 // using the data from /etc/sub{uid,gid} ranges, creates the
 // proper uid and gid remapping ranges for that user/group pair
 func NewIDMappings(username, groupname string) (*IDMappings, error) {
-	subuidRanges, err := readSubuid(username)
+	subuidRanges, err := parseSubuid(username)
 	if err != nil {
 		return nil, err
 	}
-	subgidRanges, err := readSubgid(groupname)
+	subgidRanges, err := parseSubgid(groupname)
 	if err != nil {
 		return nil, err
 	}
@@ -196,25 +188,25 @@ func (i *IDMappings) ToHost(pair IDPair) (IDPair, error) {
 	target := i.RootPair()
 
 	if pair.UID != target.UID {
-		target.UID, err = RawToHost(pair.UID, i.uids)
+		target.UID, err = toHost(pair.UID, i.uids)
 		if err != nil {
 			return target, err
 		}
 	}
 
 	if pair.GID != target.GID {
-		target.GID, err = RawToHost(pair.GID, i.gids)
+		target.GID, err = toHost(pair.GID, i.gids)
 	}
 	return target, err
 }
 
 // ToContainer returns the container UID and GID for the host uid and gid
 func (i *IDMappings) ToContainer(pair IDPair) (int, int, error) {
-	uid, err := RawToContainer(pair.UID, i.uids)
+	uid, err := toContainer(pair.UID, i.uids)
 	if err != nil {
 		return -1, -1, err
 	}
-	gid, err := RawToContainer(pair.GID, i.gids)
+	gid, err := toContainer(pair.GID, i.gids)
 	return uid, gid, err
 }
 
@@ -250,6 +242,14 @@ func createIDMap(subidRanges ranges) []IDMap {
 		containerID = containerID + idrange.Length
 	}
 	return idMap
+}
+
+func parseSubuid(username string) (ranges, error) {
+	return parseSubidFile(subuidFileName, username)
+}
+
+func parseSubgid(username string) (ranges, error) {
+	return parseSubidFile(subgidFileName, username)
 }
 
 // parseSubidFile will read the appropriate file (/etc/subuid or /etc/subgid)
@@ -322,41 +322,4 @@ func SafeLchown(name string, uid, gid int) error {
 		}
 	}
 	return checkChownErr(os.Lchown(name, uid, gid), name, uid, gid)
-}
-
-type sortByHostID []IDMap
-
-func (e sortByHostID) Len() int           { return len(e) }
-func (e sortByHostID) Swap(i, j int)      { e[i], e[j] = e[j], e[i] }
-func (e sortByHostID) Less(i, j int) bool { return e[i].HostID < e[j].HostID }
-
-type sortByContainerID []IDMap
-
-func (e sortByContainerID) Len() int           { return len(e) }
-func (e sortByContainerID) Swap(i, j int)      { e[i], e[j] = e[j], e[i] }
-func (e sortByContainerID) Less(i, j int) bool { return e[i].ContainerID < e[j].ContainerID }
-
-// IsContiguous checks if the specified mapping is contiguous and doesn't
-// have any hole.
-func IsContiguous(mappings []IDMap) bool {
-	if len(mappings) < 2 {
-		return true
-	}
-
-	var mh sortByHostID = mappings[:]
-	sort.Sort(mh)
-	for i := 1; i < len(mh); i++ {
-		if mh[i].HostID != mh[i-1].HostID+mh[i-1].Size {
-			return false
-		}
-	}
-
-	var mc sortByContainerID = mappings[:]
-	sort.Sort(mc)
-	for i := 1; i < len(mc); i++ {
-		if mc[i].ContainerID != mc[i-1].ContainerID+mc[i-1].Size {
-			return false
-		}
-	}
-	return true
 }

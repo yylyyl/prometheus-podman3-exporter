@@ -36,7 +36,6 @@ func RunUnderSystemdScope(pid int, slice string, unitName string) error {
 			return err
 		}
 	}
-	defer conn.Close()
 	properties = append(properties, systemdDbus.PropSlice(slice))
 	properties = append(properties, newProp("PIDs", []uint32{uint32(pid)}))
 	properties = append(properties, newProp("Delegate", true))
@@ -47,14 +46,15 @@ func RunUnderSystemdScope(pid int, slice string, unitName string) error {
 		// On errors check if the cgroup already exists, if it does move the process there
 		if props, err := conn.GetUnitTypeProperties(unitName, "Scope"); err == nil {
 			if cgroup, ok := props["ControlGroup"].(string); ok && cgroup != "" {
-				if err := moveUnderCgroup(cgroup, "", []uint32{uint32(pid)}); err == nil {
-					return nil
+				if err := moveUnderCgroup(cgroup, "", []uint32{uint32(pid)}); err != nil {
+					return err
 				}
-				// On errors return the original error message we got from StartTransientUnit.
+				return nil
 			}
 		}
 		return err
 	}
+	defer conn.Close()
 
 	// Block until job is started
 	<-ch
@@ -172,7 +172,7 @@ func moveUnderCgroup(cgroup, subtree string, processes []uint32) error {
 		if len(processes) > 0 {
 			for _, pid := range processes {
 				if _, err := f.Write([]byte(fmt.Sprintf("%d\n", pid))); err != nil {
-					logrus.Debugf("Cannot move process %d to cgroup %q: %v", pid, newCgroup, err)
+					logrus.Warnf("Cannot move process %d to cgroup %q", pid, newCgroup)
 				}
 			}
 		} else {
@@ -185,7 +185,7 @@ func moveUnderCgroup(cgroup, subtree string, processes []uint32) error {
 					continue
 				}
 				if _, err := f.Write(pid); err != nil {
-					logrus.Debugf("Cannot move process %s to cgroup %q: %v", string(pid), newCgroup, err)
+					logrus.Warnf("Cannot move process %s to cgroup %q", string(pid), newCgroup)
 				}
 			}
 		}

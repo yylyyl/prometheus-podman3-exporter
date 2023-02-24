@@ -22,7 +22,7 @@ import (
 	"github.com/containers/storage/pkg/system"
 	"github.com/containers/storage/pkg/unshare"
 	gzip "github.com/klauspost/pgzip"
-	"github.com/opencontainers/runc/libcontainer/userns"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/ulikunitz/xz"
@@ -645,13 +645,10 @@ func createTarFile(path, extractDir string, hdr *tar.Header, reader io.Reader, L
 		}
 		file.Close()
 
-	case tar.TypeBlock, tar.TypeChar:
+	case tar.TypeBlock, tar.TypeChar, tar.TypeFifo:
 		if inUserns { // cannot create devices in a userns
-			logrus.Debugf("Tar: Can't create device %v while running in user namespace", path)
 			return nil
 		}
-		fallthrough
-	case tar.TypeFifo:
 		// Handle this is an OS-specific way
 		if err := handleTarTypeBlockCharFifo(hdr, path); err != nil {
 			return err
@@ -879,7 +876,7 @@ func TarWithOptions(srcPath string, options *TarOptions) (io.ReadCloser, error) 
 				if include != relFilePath {
 					matches, err := pm.IsMatch(relFilePath)
 					if err != nil {
-						logrus.Errorf("Matching %s: %v", relFilePath, err)
+						logrus.Errorf("Error matching %s: %v", relFilePath, err)
 						return err
 					}
 					skip = matches
@@ -1143,7 +1140,7 @@ func (archiver *Archiver) TarUntar(src, dst string) error {
 		GIDMaps:     tarMappings.GIDs(),
 		Compression: Uncompressed,
 		CopyPass:    true,
-		InUserNS:    userns.RunningInUserNS(),
+		InUserNS:    rsystem.RunningInUserNS(),
 	}
 	archive, err := TarWithOptions(src, options)
 	if err != nil {
@@ -1158,7 +1155,7 @@ func (archiver *Archiver) TarUntar(src, dst string) error {
 		UIDMaps:   untarMappings.UIDs(),
 		GIDMaps:   untarMappings.GIDs(),
 		ChownOpts: archiver.ChownOpts,
-		InUserNS:  userns.RunningInUserNS(),
+		InUserNS:  rsystem.RunningInUserNS(),
 	}
 	return archiver.Untar(archive, dst, options)
 }
@@ -1178,7 +1175,7 @@ func (archiver *Archiver) UntarPath(src, dst string) error {
 		UIDMaps:   untarMappings.UIDs(),
 		GIDMaps:   untarMappings.GIDs(),
 		ChownOpts: archiver.ChownOpts,
-		InUserNS:  userns.RunningInUserNS(),
+		InUserNS:  rsystem.RunningInUserNS(),
 	}
 	return archiver.Untar(archive, dst, options)
 }
@@ -1278,7 +1275,7 @@ func (archiver *Archiver) CopyFileWithTar(src, dst string) (err error) {
 		UIDMaps:              archiver.UntarIDMappings.UIDs(),
 		GIDMaps:              archiver.UntarIDMappings.GIDs(),
 		ChownOpts:            archiver.ChownOpts,
-		InUserNS:             userns.RunningInUserNS(),
+		InUserNS:             rsystem.RunningInUserNS(),
 		NoOverwriteDirNonDir: true,
 	}
 	err = archiver.Untar(r, filepath.Dir(dst), options)

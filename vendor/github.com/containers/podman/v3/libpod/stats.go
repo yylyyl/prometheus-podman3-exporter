@@ -3,7 +3,6 @@
 package libpod
 
 import (
-	"math"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +30,7 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 		}
 	}
 
-	if c.state.State != define.ContainerStateRunning && c.state.State != define.ContainerStatePaused {
+	if c.state.State != define.ContainerStateRunning {
 		return stats, define.ErrCtrStateInvalid
 	}
 
@@ -55,24 +54,14 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 		return nil, err
 	}
 
-	// If the current total usage in the cgroup is less than what was previously
-	// recorded then it means the container was restarted and runs in a new cgroup
-	if previousStats.Duration > cgroupStats.CPU.Usage.Total {
-		previousStats = &define.ContainerStats{}
-	}
-
 	previousCPU := previousStats.CPUNano
 	now := uint64(time.Now().UnixNano())
-	stats.Duration = cgroupStats.CPU.Usage.Total
-	stats.UpTime = time.Duration(stats.Duration)
 	stats.CPU = calculateCPUPercent(cgroupStats, previousCPU, now, previousStats.SystemNano)
-	stats.AvgCPU = calculateAvgCPU(stats.CPU, previousStats.AvgCPU, previousStats.DataPoints)
-	stats.DataPoints = previousStats.DataPoints + 1
 	stats.MemUsage = cgroupStats.Memory.Usage.Usage
-	stats.MemLimit = c.getMemLimit()
+	stats.MemLimit = getMemLimit(cgroupStats.Memory.Usage.Limit)
 	stats.MemPerc = (float64(stats.MemUsage) / float64(stats.MemLimit)) * 100
 	stats.PIDs = 0
-	if conState == define.ContainerStateRunning || conState == define.ContainerStatePaused {
+	if conState == define.ContainerStateRunning {
 		stats.PIDs = cgroupStats.Pids.Current
 	}
 	stats.BlockInput, stats.BlockOutput = calculateBlockIO(cgroupStats)
@@ -92,29 +81,22 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 	return stats, nil
 }
 
-// getMemory limit returns the memory limit for a container
-func (c *Container) getMemLimit() uint64 {
-	memLimit := uint64(math.MaxUint64)
-
-	if c.config.Spec.Linux != nil && c.config.Spec.Linux.Resources != nil &&
-		c.config.Spec.Linux.Resources.Memory != nil && c.config.Spec.Linux.Resources.Memory.Limit != nil {
-		memLimit = uint64(*c.config.Spec.Linux.Resources.Memory.Limit)
-	}
-
+// getMemory limit returns the memory limit for a given cgroup
+// If the configured memory limit is larger than the total memory on the sys, the
+// physical system memory size is returned
+func getMemLimit(cgroupLimit uint64) uint64 {
 	si := &syscall.Sysinfo_t{}
 	err := syscall.Sysinfo(si)
 	if err != nil {
-		return memLimit
+		return cgroupLimit
 	}
 
 	//nolint:unconvert
 	physicalLimit := uint64(si.Totalram)
-
-	if memLimit <= 0 || memLimit > physicalLimit {
+	if cgroupLimit > physicalLimit {
 		return physicalLimit
 	}
-
-	return memLimit
+	return cgroupLimit
 }
 
 // calculateCPUPercent calculates the cpu usage using the latest measurement in stats.
@@ -144,10 +126,4 @@ func calculateBlockIO(stats *cgroups.Metrics) (read uint64, write uint64) {
 		}
 	}
 	return
-}
-
-// calculateAvgCPU calculates the avg CPU percentage given the previous average and the number of data points.
-func calculateAvgCPU(statsCPU float64, prevAvg float64, prevData int64) float64 {
-	avgPer := ((prevAvg * float64(prevData)) + statsCPU) / (float64(prevData) + 1)
-	return avgPer
 }

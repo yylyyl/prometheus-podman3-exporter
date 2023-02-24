@@ -12,17 +12,13 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Make sure the signal buffer is sufficiently big.
-// runc is using the same value.
-const signalBufferSize = 2048
-
 // ProxySignals ...
 func ProxySignals(ctr *libpod.Container) {
 	// Stop catching the shutdown signals (SIGINT, SIGTERM) - they're going
 	// to the container now.
 	shutdown.Stop()
 
-	sigBuffer := make(chan os.Signal, signalBufferSize)
+	sigBuffer := make(chan os.Signal, 128)
 	signal.CatchAll(sigBuffer)
 
 	logrus.Debugf("Enabling signal proxying")

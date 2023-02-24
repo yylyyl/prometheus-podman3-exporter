@@ -39,7 +39,6 @@ func ExecCreate(ctx context.Context, nameOrID string, config *handlers.ExecCreat
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
 	respStruct := new(handlers.ExecCreateResponse)
 	if err := resp.Process(respStruct); err != nil {
@@ -67,7 +66,6 @@ func ExecInspect(ctx context.Context, sessionID string, options *ExecInspectOpti
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	respStruct := new(define.InspectExecSession)
 	if err := resp.Process(respStruct); err != nil {
@@ -105,7 +103,6 @@ func ExecStart(ctx context.Context, sessionID string, options *ExecStartOptions)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
 	return resp.Process(nil)
 }

@@ -3,25 +3,23 @@ package abi
 import (
 	"context"
 
-	"github.com/containers/common/libimage"
+	libpodImage "github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	"github.com/pkg/errors"
 )
 
 func (ir *ImageEngine) List(ctx context.Context, opts entities.ImageListOptions) ([]*entities.ImageSummary, error) {
-	listImagesOptions := &libimage.ListImagesOptions{
-		Filters: opts.Filter,
-	}
-	if !opts.All {
-		// Filter intermediate images unless we want to list *all*.
-		// NOTE: it's a positive filter, so `intermediate=false` means
-		// to display non-intermediate images.
-		listImagesOptions.Filters = append(listImagesOptions.Filters, "intermediate=false")
-	}
-
-	images, err := ir.Libpod.LibimageRuntime().ListImages(ctx, nil, listImagesOptions)
+	images, err := ir.Libpod.ImageRuntime().GetImagesWithFilters(opts.Filter)
 	if err != nil {
 		return nil, err
+	}
+
+	if !opts.All {
+		filter, err := ir.Libpod.ImageRuntime().IntermediateFilter(ctx, images)
+		if err != nil {
+			return nil, err
+		}
+		images = libpodImage.FilterImages(images, []libpodImage.ResultFilter{filter})
 	}
 
 	summaries := []*entities.ImageSummary{}
@@ -30,27 +28,26 @@ func (ir *ImageEngine) List(ctx context.Context, opts entities.ImageListOptions)
 		for j, d := range img.Digests() {
 			digests[j] = string(d)
 		}
-		isDangling, err := img.IsDangling(ctx)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error checking if image %q is dangling", img.ID())
-		}
 
 		e := entities.ImageSummary{
-			ID: img.ID(),
-			//			ConfigDigest: string(img.ConfigDigest),
-			Created:     img.Created().Unix(),
-			Dangling:    isDangling,
-			Digest:      string(img.Digest()),
-			RepoDigests: digests,
-			History:     img.NamesHistory(),
-			Names:       img.Names(),
-			ReadOnly:    img.IsReadOnly(),
-			SharedSize:  0,
-			RepoTags:    img.Names(), // may include tags and digests
+			ID:           img.ID(),
+			ConfigDigest: string(img.ConfigDigest),
+			Created:      img.Created().Unix(),
+			Dangling:     img.Dangling(),
+			Digest:       string(img.Digest()),
+			RepoDigests:  digests,
+			History:      img.NamesHistory(),
+			Names:        img.Names(),
+			ReadOnly:     img.IsReadOnly(),
+			SharedSize:   0,
+			RepoTags:     img.Names(), // may include tags and digests
 		}
 		e.Labels, err = img.Labels(ctx)
 		if err != nil {
-			return nil, errors.Wrapf(err, "error retrieving label for image %q: you may need to remove the image to resolve the error", img.ID())
+			// Ignore empty manifest lists.
+			if errors.Cause(err) != libpodImage.ErrImageIsBareList {
+				return nil, errors.Wrapf(err, "error retrieving label for image %q: you may need to remove the image to resolve the error", img.ID())
+			}
 		}
 
 		ctnrs, err := img.Containers()
@@ -59,22 +56,20 @@ func (ir *ImageEngine) List(ctx context.Context, opts entities.ImageListOptions)
 		}
 		e.Containers = len(ctnrs)
 
-		sz, err := img.Size()
+		sz, err := img.Size(ctx)
 		if err != nil {
 			return nil, errors.Wrapf(err, "error retrieving size of image %q: you may need to remove the image to resolve the error", img.ID())
 		}
-		e.Size = sz
+		e.Size = int64(*sz)
 		// This is good enough for now, but has to be
 		// replaced later with correct calculation logic
-		e.VirtualSize = sz
+		e.VirtualSize = int64(*sz)
 
-		parent, err := img.Parent(ctx)
+		parent, err := img.ParentID(ctx)
 		if err != nil {
 			return nil, errors.Wrapf(err, "error retrieving parent of image %q: you may need to remove the image to resolve the error", img.ID())
 		}
-		if parent != nil {
-			e.ParentId = parent.ID()
-		}
+		e.ParentId = parent
 
 		summaries = append(summaries, &e)
 	}

@@ -4,7 +4,6 @@ package libpod
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/psgo"
-	"github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -49,25 +47,11 @@ func (c *Container) Top(descriptors []string) ([]string, error) {
 	if psgoErr == nil {
 		return output, nil
 	}
-	if !errors.Is(psgoErr, psgo.ErrUnknownDescriptor) {
+	if errors.Cause(psgoErr) != psgo.ErrUnknownDescriptor {
 		return nil, psgoErr
 	}
 
-	// Note that the descriptors to ps(1) must be shlexed (see #12452).
-	psDescriptors := []string{}
-	for _, d := range descriptors {
-		shSplit, err := shlex.Split(d)
-		if err != nil {
-			return nil, fmt.Errorf("parsing ps args: %v", err)
-		}
-		for _, s := range shSplit {
-			if s != "" {
-				psDescriptors = append(psDescriptors, s)
-			}
-		}
-	}
-
-	output, err = c.execPS(psDescriptors)
+	output, err = c.execPS(descriptors)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error executing ps(1) in the container")
 	}

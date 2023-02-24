@@ -51,12 +51,6 @@ func GenerateVolumeFilters(filters url.Values) ([]libpod.VolumeFilter, error) {
 					}
 					return false
 				})
-			case "until":
-				f, err := createUntilFilterVolumeFunction(val)
-				if err != nil {
-					return nil, err
-				}
-				vf = append(vf, f)
 			case "dangling":
 				danglingVal := val
 				invert := false
@@ -92,35 +86,16 @@ func GeneratePruneVolumeFilters(filters url.Values) ([]libpod.VolumeFilter, erro
 	var vf []libpod.VolumeFilter
 	for filter, v := range filters {
 		for _, val := range v {
-			filterVal := val
 			switch filter {
 			case "label":
+				filter := val
 				vf = append(vf, func(v *libpod.Volume) bool {
-					return util.MatchLabelFilters([]string{filterVal}, v.Labels())
+					return util.MatchLabelFilters([]string{filter}, v.Labels())
 				})
-			case "until":
-				f, err := createUntilFilterVolumeFunction(filterVal)
-				if err != nil {
-					return nil, err
-				}
-				vf = append(vf, f)
 			default:
 				return nil, errors.Errorf("%q is an invalid volume filter", filter)
 			}
 		}
 	}
 	return vf, nil
-}
-
-func createUntilFilterVolumeFunction(filter string) (libpod.VolumeFilter, error) {
-	until, err := util.ComputeUntilTimestamp([]string{filter})
-	if err != nil {
-		return nil, err
-	}
-	return func(v *libpod.Volume) bool {
-		if !until.IsZero() && v.CreatedTime().Before(until) {
-			return true
-		}
-		return false
-	}, nil
 }

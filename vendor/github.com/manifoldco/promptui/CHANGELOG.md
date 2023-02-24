@@ -7,13 +7,6 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
-## [0.9.0] - 2021-10-30
-
-### Fixed
-
-- Resolve license incompatibility in tabwriter
-
-
 ## [0.8.0] - 2020-09-28
 
 ### Added

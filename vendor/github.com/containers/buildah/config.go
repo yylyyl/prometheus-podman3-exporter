@@ -3,7 +3,6 @@ package buildah
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -51,7 +50,7 @@ func unmarshalConvertedConfig(ctx context.Context, dest interface{}, img types.I
 	return nil
 }
 
-func (b *Builder) initConfig(ctx context.Context, img types.Image, sys *types.SystemContext) error {
+func (b *Builder) initConfig(ctx context.Context, img types.Image) error {
 	if img != nil { // A pre-existing image, as opposed to a "FROM scratch" new one.
 		rawManifest, manifestMIMEType, err := img.Manifest(ctx)
 		if err != nil {
@@ -82,24 +81,15 @@ func (b *Builder) initConfig(ctx context.Context, img types.Image, sys *types.Sy
 			if err := json.Unmarshal(b.Manifest, &v1Manifest); err != nil {
 				return errors.Wrapf(err, "error parsing OCI manifest %q", string(b.Manifest))
 			}
-			for k, v := range v1Manifest.Annotations {
-				// NOTE: do not override annotations that are
-				// already set. Otherwise, we may erase
-				// annotations such as the digest of the base
-				// image.
-				if value := b.ImageAnnotations[k]; value == "" {
-					b.ImageAnnotations[k] = v
-				}
-			}
+			b.ImageAnnotations = v1Manifest.Annotations
 		}
 	}
 
-	b.setupLogger()
-	b.fixupConfig(sys)
+	b.fixupConfig()
 	return nil
 }
 
-func (b *Builder) fixupConfig(sys *types.SystemContext) {
+func (b *Builder) fixupConfig() {
 	if b.Docker.Config != nil {
 		// Prefer image-level settings over those from the container it was built from.
 		b.Docker.ContainerConfig = *b.Docker.Config
@@ -114,29 +104,13 @@ func (b *Builder) fixupConfig(sys *types.SystemContext) {
 		b.OCIv1.Created = &now
 	}
 	if b.OS() == "" {
-		if sys != nil && sys.OSChoice != "" {
-			b.SetOS(sys.OSChoice)
-		} else {
-			b.SetOS(runtime.GOOS)
-		}
+		b.SetOS(runtime.GOOS)
 	}
 	if b.Architecture() == "" {
-		if sys != nil && sys.ArchitectureChoice != "" {
-			b.SetArchitecture(sys.ArchitectureChoice)
-		} else {
-			b.SetArchitecture(runtime.GOARCH)
-		}
+		b.SetArchitecture(runtime.GOARCH)
 	}
 	if b.Format == define.Dockerv2ImageManifest && b.Hostname() == "" {
 		b.SetHostname(stringid.TruncateID(stringid.GenerateRandomID()))
-	}
-}
-
-func (b *Builder) setupLogger() {
-	if b.Logger == nil {
-		b.Logger = logrus.New()
-		b.Logger.SetOutput(os.Stderr)
-		b.Logger.SetLevel(logrus.GetLevel())
 	}
 }
 

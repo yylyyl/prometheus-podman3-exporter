@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v3/libpod/image"
 	images "github.com/containers/podman/v3/pkg/bindings/images"
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	"github.com/containers/podman/v3/pkg/domain/entities/reports"
@@ -107,7 +107,7 @@ func (ir *ImageEngine) Pull(ctx context.Context, rawImage string, opts entities.
 	options := new(images.PullOptions)
 	options.WithAllTags(opts.AllTags).WithAuthfile(opts.Authfile).WithArch(opts.Arch).WithOS(opts.OS)
 	options.WithVariant(opts.Variant).WithPassword(opts.Password)
-	options.WithQuiet(opts.Quiet).WithUsername(opts.Username).WithPolicy(opts.PullPolicy.String())
+	options.WithQuiet(opts.Quiet).WithUsername(opts.Username)
 	if s := opts.SkipTLSVerify; s != types.OptionalBoolUndefined {
 		if s == types.OptionalBoolTrue {
 			options.WithSkipTLSVerify(true)
@@ -165,9 +165,6 @@ func (ir *ImageEngine) Untag(ctx context.Context, nameOrID string, tags []string
 		if t, ok := ref.(reference.Tagged); ok {
 			tag = t.Tag()
 		}
-		if t, ok := ref.(reference.Digested); ok {
-			tag += "@" + t.Digest().String()
-		}
 		if r, ok := ref.(reference.Named); ok {
 			repo = r.Name()
 		}
@@ -188,7 +185,7 @@ func (ir *ImageEngine) Inspect(ctx context.Context, namesOrIDs []string, opts en
 	for _, i := range namesOrIDs {
 		r, err := images.GetImage(ir.ClientCtx, i, options)
 		if err != nil {
-			errModel, ok := err.(*errorhandling.ErrorModel)
+			errModel, ok := err.(errorhandling.ErrorModel)
 			if !ok {
 				return nil, nil, err
 			}
@@ -264,10 +261,7 @@ func (ir *ImageEngine) Save(ctx context.Context, nameOrID string, tags []string,
 			defer func() { _ = os.Remove(f.Name()) }()
 		}
 	default:
-		// This code was added to allow for opening stdout replacing
-		// os.Create(opts.Output) which was attempting to open the file
-		// for read/write which fails on Darwin platforms
-		f, err = os.OpenFile(opts.Output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		f, err = os.Create(opts.Output)
 	}
 	if err != nil {
 		return err
@@ -305,9 +299,19 @@ func (ir *ImageEngine) Save(ctx context.Context, nameOrID string, tags []string,
 	return utils2.UntarToFileSystem(opts.Output, f, nil)
 }
 
+// Diff reports the changes to the given image
+func (ir *ImageEngine) Diff(ctx context.Context, nameOrID string, _ entities.DiffOptions) (*entities.DiffReport, error) {
+	options := new(images.DiffOptions)
+	changes, err := images.Diff(ir.ClientCtx, nameOrID, options)
+	if err != nil {
+		return nil, err
+	}
+	return &entities.DiffReport{Changes: changes}, nil
+}
+
 func (ir *ImageEngine) Search(ctx context.Context, term string, opts entities.ImageSearchOptions) ([]entities.ImageSearchReport, error) {
 	mappedFilters := make(map[string][]string)
-	filters, err := libimage.ParseSearchFilter(opts.Filters)
+	filters, err := image.ParseSearchFilter(opts.Filters)
 	if err != nil {
 		return nil, err
 	}

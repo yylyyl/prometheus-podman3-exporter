@@ -44,16 +44,16 @@ func (e EventLogFile) Write(ee Event) error {
 // Reads from the log file
 func (e EventLogFile) Read(ctx context.Context, options ReadOptions) error {
 	defer close(options.EventChannel)
-	filterMap, err := generateEventFilters(options.Filters, options.Since, options.Until)
+	eventOptions, err := generateEventOptions(options.Filters, options.Since, options.Until)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse event filters")
+		return errors.Wrapf(err, "unable to generate event options")
 	}
 	t, err := e.getTail(options)
 	if err != nil {
 		return err
 	}
 	if len(options.Until) > 0 {
-		untilTime, err := util.ParseInputTime(options.Until, false)
+		untilTime, err := util.ParseInputTime(options.Until)
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,11 @@ func (e EventLogFile) Read(ctx context.Context, options ReadOptions) error {
 		default:
 			return errors.Errorf("event type %s is not valid in %s", event.Type.String(), e.options.LogFilePath)
 		}
-		if copy && applyFilters(event, filterMap) {
+		include := true
+		for _, filter := range eventOptions {
+			include = include && filter(event)
+		}
+		if include && copy {
 			options.EventChannel <- event
 		}
 	}

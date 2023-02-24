@@ -42,8 +42,6 @@ func List(ctx context.Context, options *ListOptions) ([]entities.ListContainer, 
 	if err != nil {
 		return containers, err
 	}
-	defer response.Body.Close()
-
 	return containers, response.Process(&containers)
 }
 
@@ -68,8 +66,6 @@ func Prune(ctx context.Context, options *PruneOptions) ([]*reports.PruneReport, 
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return reports, response.Process(&reports)
 }
 
@@ -94,8 +90,6 @@ func Remove(ctx context.Context, nameOrID string, options *RemoveOptions) error 
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -119,8 +113,6 @@ func Inspect(ctx context.Context, nameOrID string, options *InspectOptions) (*de
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	inspect := define.InspectContainerData{}
 	return &inspect, response.Process(&inspect)
 }
@@ -144,8 +136,6 @@ func Kill(ctx context.Context, nameOrID string, options *KillOptions) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -164,8 +154,6 @@ func Pause(ctx context.Context, nameOrID string, options *PauseOptions) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -188,8 +176,6 @@ func Restart(ctx context.Context, nameOrID string, options *RestartOptions) erro
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -213,8 +199,6 @@ func Start(ctx context.Context, nameOrID string, options *StartOptions) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -239,15 +223,11 @@ func Stats(ctx context.Context, containers []string, options *StatsOptions) (cha
 	if err != nil {
 		return nil, err
 	}
-	if !response.IsSuccess() {
-		return nil, response.Process(nil)
-	}
 
 	statsChan := make(chan entities.ContainerStatsReport)
 
 	go func() {
 		defer close(statsChan)
-		defer response.Body.Close()
 
 		dec := json.NewDecoder(response.Body)
 		doStream := true
@@ -262,7 +242,6 @@ func Stats(ctx context.Context, containers []string, options *StatsOptions) (cha
 		default:
 			// fall through and do some work
 		}
-
 		var report entities.ContainerStatsReport
 		if err := dec.Decode(&report); err != nil {
 			report = entities.ContainerStatsReport{Error: err}
@@ -297,7 +276,6 @@ func Top(ctx context.Context, nameOrID string, options *TopOptions) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
 
 	body := handlers.ContainerTopOKBody{}
 	if err = response.Process(&body); err != nil {
@@ -330,8 +308,6 @@ func Unpause(ctx context.Context, nameOrID string, options *UnpauseOptions) erro
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -355,8 +331,6 @@ func Wait(ctx context.Context, nameOrID string, options *WaitOptions) (int32, er
 	if err != nil {
 		return exitCode, err
 	}
-	defer response.Body.Close()
-
 	return exitCode, response.Process(&exitCode)
 }
 
@@ -376,8 +350,6 @@ func Exists(ctx context.Context, nameOrID string, options *ExistsOptions) (bool,
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
-
 	return response.IsSuccess(), nil
 }
 
@@ -399,8 +371,6 @@ func Stop(ctx context.Context, nameOrID string, options *StopOptions) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	return response.Process(nil)
 }
 
@@ -420,8 +390,6 @@ func Export(ctx context.Context, nameOrID string, w io.Writer, options *ExportOp
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	if response.StatusCode/100 == 2 {
 		_, err = io.Copy(w, response.Body)
 		return err
@@ -445,8 +413,6 @@ func ContainerInit(ctx context.Context, nameOrID string, options *InitOptions) e
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
-
 	if response.StatusCode == http.StatusNotModified {
 		return errors.Wrapf(define.ErrCtrStateInvalid, "container %s has already been created in runtime", nameOrID)
 	}
@@ -466,7 +432,5 @@ func ShouldRestart(ctx context.Context, nameOrID string, options *ShouldRestartO
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
-
 	return response.IsSuccess(), nil
 }

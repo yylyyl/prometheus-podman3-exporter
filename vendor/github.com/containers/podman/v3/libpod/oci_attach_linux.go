@@ -84,7 +84,7 @@ func (c *Container) attach(streams *define.AttachStreams, keys string, resize <-
 	if attachRdy != nil {
 		attachRdy <- true
 	}
-	return readStdio(conn, streams, receiveStdoutError, stdinDone)
+	return readStdio(streams, receiveStdoutError, stdinDone)
 }
 
 // Attach to the given container's exec session
@@ -94,18 +94,17 @@ func (c *Container) attach(streams *define.AttachStreams, keys string, resize <-
 //    this ensures attachToExec gets all of the output of the called process
 //  conmon will then send the exit code of the exec process, or an error in the exec session
 // startFd must be the input side of the fd.
-// newSize resizes the tty to this size before the process is started, must be nil if the exec session has no tty
 //   conmon will wait to start the exec session until the parent process has setup the console socket.
 //   Once attachToExec successfully attaches to the console socket, the child conmon process responsible for calling runtime exec
 //     will read from the output side of start fd, thus learning to start the child process.
 // Thus, the order goes as follow:
 // 1. conmon parent process sets up its console socket. sends on attachFd
-// 2. attachToExec attaches to the console socket after reading on attachFd and resizes the tty
+// 2. attachToExec attaches to the console socket after reading on attachFd
 // 3. child waits on startFd for attachToExec to attach to said console socket
 // 4. attachToExec sends on startFd, signalling it has attached to the socket and child is ready to go
 // 5. child receives on startFd, runs the runtime exec command
 // attachToExec is responsible for closing startFd and attachFd
-func (c *Container) attachToExec(streams *define.AttachStreams, keys *string, sessionID string, startFd, attachFd *os.File, newSize *define.TerminalSize) error {
+func (c *Container) attachToExec(streams *define.AttachStreams, keys *string, sessionID string, startFd, attachFd *os.File) error {
 	if !streams.AttachOutput && !streams.AttachError && !streams.AttachInput {
 		return errors.Wrapf(define.ErrInvalidArg, "must provide at least one stream to attach to")
 	}
@@ -138,14 +137,6 @@ func (c *Container) attachToExec(streams *define.AttachStreams, keys *string, se
 		return err
 	}
 
-	// resize before we start the container process
-	if newSize != nil {
-		err = c.ociRuntime.ExecAttachResize(c, sessionID, *newSize)
-		if err != nil {
-			logrus.Warn("resize failed", err)
-		}
-	}
-
 	// 2: then attach
 	conn, err := openUnixSocket(sockPath)
 	if err != nil {
@@ -165,7 +156,7 @@ func (c *Container) attachToExec(streams *define.AttachStreams, keys *string, se
 		return err
 	}
 
-	return readStdio(conn, streams, receiveStdoutError, stdinDone)
+	return readStdio(streams, receiveStdoutError, stdinDone)
 }
 
 func processDetachKeys(keys string) ([]byte, error) {
@@ -208,6 +199,11 @@ func setupStdioChannels(streams *define.AttachStreams, conn *net.UnixConn, detac
 		var err error
 		if streams.AttachInput {
 			_, err = utils.CopyDetachable(conn, streams.InputStream, detachKeys)
+			if err == nil {
+				if connErr := conn.CloseWrite(); connErr != nil {
+					logrus.Errorf("unable to close conn: %q", connErr)
+				}
+			}
 		}
 		stdinDone <- err
 	}()
@@ -260,7 +256,7 @@ func redirectResponseToOutputStreams(outputStream, errorStream io.Writer, writeO
 	return err
 }
 
-func readStdio(conn *net.UnixConn, streams *define.AttachStreams, receiveStdoutError, stdinDone chan error) error {
+func readStdio(streams *define.AttachStreams, receiveStdoutError, stdinDone chan error) error {
 	var err error
 	select {
 	case err = <-receiveStdoutError:
@@ -268,12 +264,6 @@ func readStdio(conn *net.UnixConn, streams *define.AttachStreams, receiveStdoutE
 	case err = <-stdinDone:
 		if err == define.ErrDetach {
 			return err
-		}
-		if err == nil {
-			// copy stdin is done, close it
-			if connErr := conn.CloseWrite(); connErr != nil {
-				logrus.Errorf("Unable to close conn: %v", connErr)
-			}
 		}
 		if streams.AttachOutput || streams.AttachError {
 			return <-receiveStdoutError

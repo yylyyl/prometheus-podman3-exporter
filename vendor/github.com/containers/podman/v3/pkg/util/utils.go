@@ -3,7 +3,6 @@ package util
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -520,7 +519,7 @@ func WriteStorageConfigFile(storageOpts *stypes.StoreOptions, storageConf string
 // ParseInputTime takes the users input and to determine if it is valid and
 // returns a time format and error.  The input is compared to known time formats
 // or a duration which implies no-duration
-func ParseInputTime(inputTime string, since bool) (time.Time, error) {
+func ParseInputTime(inputTime string) (time.Time, error) {
 	timeFormats := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04:05.999999999",
 		"2006-01-02Z07:00", "2006-01-02"}
 	// iterate the supported time formats
@@ -531,10 +530,9 @@ func ParseInputTime(inputTime string, since bool) (time.Time, error) {
 		}
 	}
 
-	unixTimestamp, err := strconv.ParseFloat(inputTime, 64)
+	unixTimestamp, err := strconv.ParseInt(inputTime, 10, 64)
 	if err == nil {
-		iPart, fPart := math.Modf(unixTimestamp)
-		return time.Unix(int64(iPart), int64(fPart*1_000_000_000)).UTC(), nil
+		return time.Unix(unixTimestamp, 0), nil
 	}
 
 	// input might be a duration
@@ -542,10 +540,7 @@ func ParseInputTime(inputTime string, since bool) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, errors.Errorf("unable to interpret time value")
 	}
-	if since {
-		return time.Now().Add(-duration), nil
-	}
-	return time.Now().Add(duration), nil
+	return time.Now().Add(-duration), nil
 }
 
 // OpenExclusiveFile opens a file for writing and ensure it doesn't already exist
@@ -557,6 +552,23 @@ func OpenExclusiveFile(path string) (*os.File, error) {
 		}
 	}
 	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
+}
+
+type PullType = config.PullPolicy
+
+var (
+	// PullImageAlways always try to pull new image when create or run
+	PullImageAlways = config.PullImageAlways
+	// PullImageMissing pulls image if it is not locally
+	PullImageMissing = config.PullImageMissing
+	// PullImageNever will never pull new image
+	PullImageNever = config.PullImageNever
+)
+
+// ValidatePullType check if the pullType from CLI is valid and returns the valid enum type
+// if the value from CLI is invalid returns the error
+func ValidatePullType(pullType string) (PullType, error) {
+	return config.ValidatePullPolicy(pullType)
 }
 
 // ExitCode reads the error message when failing to executing container process
@@ -621,12 +633,6 @@ func ValidateSysctls(strSlice []string) (map[string]string, error) {
 		if len(arr) < 2 {
 			return nil, errors.Errorf("%s is invalid, sysctl values must be in the form of KEY=VALUE", val)
 		}
-
-		trimmed := fmt.Sprintf("%s=%s", strings.TrimSpace(arr[0]), strings.TrimSpace(arr[1]))
-		if trimmed != val {
-			return nil, errors.Errorf("'%s' is invalid, extra spaces found", val)
-		}
-
 		if validSysctlMap[arr[0]] {
 			sysctl[arr[0]] = arr[1]
 			continue
@@ -699,27 +705,4 @@ func IDtoolsToRuntimeSpec(idMaps []idtools.IDMap) (convertedIDMap []specs.LinuxI
 		convertedIDMap = append(convertedIDMap, tempIDMap)
 	}
 	return convertedIDMap
-}
-
-var socketPath string
-
-func SetSocketPath(path string) {
-	socketPath = path
-}
-
-func SocketPath() (string, error) {
-	if socketPath != "" {
-		return socketPath, nil
-	}
-	xdg, err := GetRuntimeDir()
-	if err != nil {
-		return "", err
-	}
-	if len(xdg) == 0 {
-		// If no xdg is returned, assume root socket
-		xdg = "/run"
-	}
-
-	// Glue the socket path together
-	return filepath.Join(xdg, "podman", "podman.sock"), nil
 }

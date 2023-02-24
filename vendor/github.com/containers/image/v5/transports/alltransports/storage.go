@@ -1,4 +1,3 @@
-//go:build !containers_image_storage_stub
 // +build !containers_image_storage_stub
 
 package alltransports

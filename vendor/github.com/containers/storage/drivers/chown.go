@@ -2,6 +2,7 @@ package graphdriver
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 

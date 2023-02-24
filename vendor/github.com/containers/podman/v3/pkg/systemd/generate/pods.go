@@ -101,7 +101,7 @@ PIDFile={{{{.PIDFile}}}}
 Type=forking
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target default.target
 `
 
 // PodUnits generates systemd units for the specified pod and its containers.
@@ -217,6 +217,7 @@ func generatePodInfo(pod *libpod.Pod, options entities.GenerateSystemdOptions) (
 	info := podInfo{
 		ServiceName:       serviceName,
 		InfraNameOrID:     ctrNameOrID,
+		RestartPolicy:     options.RestartPolicy,
 		PIDFile:           conmonPidFile,
 		StopTimeout:       timeout,
 		GenerateTimestamp: true,
@@ -229,12 +230,8 @@ func generatePodInfo(pod *libpod.Pod, options entities.GenerateSystemdOptions) (
 // that the podInfo is also post processed and completed, which allows for an
 // easier unit testing.
 func executePodTemplate(info *podInfo, options entities.GenerateSystemdOptions) (string, error) {
-	info.RestartPolicy = define.DefaultRestartPolicy
-	if options.RestartPolicy != nil {
-		if err := validateRestartPolicy(*options.RestartPolicy); err != nil {
-			return "", err
-		}
-		info.RestartPolicy = *options.RestartPolicy
+	if err := validateRestartPolicy(info.RestartPolicy); err != nil {
+		return "", err
 	}
 
 	// Make sure the executable is set.

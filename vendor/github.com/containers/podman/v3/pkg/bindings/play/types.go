@@ -1,9 +1,5 @@
 package play
 
-import (
-	"net"
-)
-
 //go:generate go run ../generator/generator.go KubeOptions
 // KubeOptions are optional options for replaying kube YAML files
 type KubeOptions struct {
@@ -27,10 +23,6 @@ type KubeOptions struct {
 	// SeccompProfileRoot - path to a directory containing seccomp
 	// profiles.
 	SeccompProfileRoot *string
-	// StaticIPs - Static IP address used by the pod(s).
-	StaticIPs *[]net.IP
-	// StaticMACs - Static MAC address used by the pod(s).
-	StaticMACs *[]net.HardwareAddr
 	// ConfigMaps - slice of pathnames to kubernetes configmap YAMLs.
 	ConfigMaps *[]string
 	// LogDriver for the container. For example: journald

@@ -5,7 +5,6 @@ import (
 	"syscall"
 
 	"github.com/containers/image/v5/manifest"
-	nettypes "github.com/containers/podman/v3/libpod/network/types"
 	"github.com/containers/storage/types"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -84,11 +83,6 @@ type ContainerBasicConfig struct {
 	// instead.
 	// Optional.
 	StopTimeout *uint `json:"stop_timeout,omitempty"`
-	// Timeout is a maximum time in seconds the container will run before
-	// main process is sent SIGKILL.
-	// If 0 is used, signal will not be sent. Container can run indefinitely
-	// Optional.
-	Timeout uint `json:"timeout,omitempty"`
 	// LogConfiguration describes the logging for a container including
 	// driver, path, and options.
 	// Optional
@@ -166,32 +160,10 @@ type ContainerBasicConfig struct {
 	// to 0, 1, 2) that will be passed to the executed process. The total FDs
 	// passed will be 3 + PreserveFDs.
 	// set tags as `json:"-"` for not supported remote
-	// Optional.
 	PreserveFDs uint `json:"-"`
 	// Timezone is the timezone inside the container.
 	// Local means it has the same timezone as the host machine
-	// Optional.
 	Timezone string `json:"timezone,omitempty"`
-	// DependencyContainers is an array of containers this container
-	// depends on. Dependency containers must be started before this
-	// container. Dependencies can be specified by name or full/partial ID.
-	// Optional.
-	DependencyContainers []string `json:"dependencyContainers,omitempty"`
-	// PidFile is the file that saves container process id.
-	// set tags as `json:"-"` for not supported remote
-	// Optional.
-	PidFile string `json:"-"`
-	// EnvSecrets are secrets that will be set as environment variables
-	// Optional.
-	EnvSecrets map[string]string `json:"secret_env,omitempty"`
-	// InitContainerType describes if this container is an init container
-	// and if so, what type: always or once
-	InitContainerType string `json:"init_container_type"`
-	// Personality allows users to configure different execution domains.
-	// Execution domains tell Linux how to map signal numbers into signal actions.
-	// The execution domain system allows Linux to provide limited support
-	// for binaries compiled under other UNIX-like operating systems.
-	Personality *spec.LinuxPersonality `json:"personality,omitempty"`
 }
 
 // ContainerStorageConfig contains information on the storage configuration of a
@@ -248,9 +220,6 @@ type ContainerStorageConfig struct {
 	// Devices are devices that will be added to the container.
 	// Optional.
 	Devices []spec.LinuxDevice `json:"devices,omitempty"`
-	// DeviceCGroupRule are device cgroup rules that allow containers
-	// to use additional types of devices.
-	DeviceCGroupRule []spec.LinuxDeviceCgroup `json:"device_cgroup_rule,omitempty"`
 	// IpcNS is the container's IPC namespace.
 	// Default is private.
 	// Conflicts with ShmSize if not set to private.
@@ -264,20 +233,13 @@ type ContainerStorageConfig struct {
 	// If unset, the default, /, will be used.
 	// Optional.
 	WorkDir string `json:"work_dir,omitempty"`
-	// Create the working directory if it doesn't exist.
-	// If unset, it doesn't create it.
-	// Optional.
-	CreateWorkingDir bool `json:"create_working_dir,omitempty"`
 	// RootfsPropagation is the rootfs propagation mode for the container.
 	// If not set, the default of rslave will be used.
 	// Optional.
 	RootfsPropagation string `json:"rootfs_propagation,omitempty"`
 	// Secrets are the secrets that will be added to the container
 	// Optional.
-	Secrets []Secret `json:"secrets,omitempty"`
-	// Volatile specifies whether the container storage can be optimized
-	// at the cost of not syncing all the dirty files in memory.
-	Volatile bool `json:"volatile,omitempty"`
+	Secrets []string `json:"secrets,omitempty"`
 }
 
 // ContainerSecurityConfig is a container's security features, including
@@ -398,7 +360,7 @@ type ContainerNetworkConfig struct {
 	// PortBindings is a set of ports to map into the container.
 	// Only available if NetNS is set to bridge or slirp.
 	// Optional.
-	PortMappings []nettypes.PortMapping `json:"portmappings,omitempty"`
+	PortMappings []PortMapping `json:"portmappings,omitempty"`
 	// PublishExposedPorts will publish ports specified in the image to
 	// random unused ports (guaranteed to be above 1024) on the host.
 	// This is based on ports set in Expose below, and any ports specified
@@ -486,10 +448,6 @@ type ContainerResourceConfig struct {
 	// that are used to configure cgroup v2.
 	// Optional.
 	CgroupConf map[string]string `json:"unified,omitempty"`
-	// CPU period of the cpuset, determined by --cpus
-	CPUPeriod uint64 `json:"cpu_period,omitempty"`
-	// CPU quota of the cpuset, determined by --cpus
-	CPUQuota int64 `json:"cpu_quota,omitempty"`
 }
 
 // ContainerHealthCheckConfig describes a container healthcheck with attributes
@@ -511,12 +469,34 @@ type SpecGenerator struct {
 	ContainerHealthCheckConfig
 }
 
-type Secret struct {
-	Source string
-	Target string
-	UID    uint32
-	GID    uint32
-	Mode   uint32
+// PortMapping is one or more ports that will be mapped into the container.
+type PortMapping struct {
+	// HostIP is the IP that we will bind to on the host.
+	// If unset, assumed to be 0.0.0.0 (all interfaces).
+	HostIP string `json:"host_ip,omitempty"`
+	// ContainerPort is the port number that will be exposed from the
+	// container.
+	// Mandatory.
+	ContainerPort uint16 `json:"container_port"`
+	// HostPort is the port number that will be forwarded from the host into
+	// the container.
+	// If omitted, a random port on the host (guaranteed to be over 1024)
+	// will be assigned.
+	HostPort uint16 `json:"host_port,omitempty"`
+	// Range is the number of ports that will be forwarded, starting at
+	// HostPort and ContainerPort and counting up.
+	// This is 1-indexed, so 1 is assumed to be a single port (only the
+	// Hostport:Containerport mapping will be added), 2 is two ports (both
+	// Hostport:Containerport and Hostport+1:Containerport+1), etc.
+	// If unset, assumed to be 1 (a single port).
+	// Both hostport + range and containerport + range must be less than
+	// 65536.
+	Range uint16 `json:"range,omitempty"`
+	// Protocol is the protocol forward.
+	// Must be either "tcp", "udp", and "sctp", or some combination of these
+	// separated by commas.
+	// If unset, assumed to be TCP.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 var (

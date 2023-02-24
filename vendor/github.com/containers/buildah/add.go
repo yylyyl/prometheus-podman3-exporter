@@ -22,7 +22,7 @@ import (
 	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/hashicorp/go-multierror"
-	"github.com/opencontainers/runc/libcontainer/userns"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -224,7 +224,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 		}
 		localSourceStats, err = copier.Stat(contextDir, contextDir, statOptions, localSources)
 		if err != nil {
-			return errors.Wrapf(err, "checking on sources under %q", contextDir)
+			return errors.Wrapf(err, "error checking on sources %v under %q", localSources, contextDir)
 		}
 	}
 	numLocalSourceItems := 0
@@ -238,10 +238,10 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				errorText = fmt.Sprintf("possible escaping context directory error: %s", errorText)
 			}
-			return errors.Errorf("checking on sources under %q: %v", contextDir, errorText)
+			return errors.Errorf("error checking on source %v under %q: %v", localSourceStat.Glob, contextDir, errorText)
 		}
 		if len(localSourceStat.Globbed) == 0 {
-			return errors.Wrapf(syscall.ENOENT, "checking source under %q: no glob matches", contextDir)
+			return errors.Wrapf(syscall.ENOENT, "error checking on source %v under %q: no glob matches", localSourceStat.Glob, contextDir)
 		}
 		numLocalSourceItems += len(localSourceStat.Globbed)
 	}
@@ -287,7 +287,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			destination = tmpDestination
 		}
 	}
-	destMustBeDirectory := (len(sources) > 1) || strings.HasSuffix(destination, string(os.PathSeparator)) || destination == b.WorkDir()
+	destMustBeDirectory := (len(sources) > 1) || strings.HasSuffix(destination, string(os.PathSeparator))
 	destCanBeFile := false
 	if len(sources) == 1 {
 		if len(remoteSources) == 1 {
@@ -399,7 +399,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 						ChmodDirs:     nil,
 						ChownFiles:    nil,
 						ChmodFiles:    nil,
-						IgnoreDevices: userns.RunningInUserNS(),
+						IgnoreDevices: rsystem.RunningInUserNS(),
 					}
 					putErr = copier.Put(extractDirectory, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
 				}
@@ -433,7 +433,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			}
 		}
 		if localSourceStat == nil {
-			continue
+			return errors.Errorf("internal error: should have statted %s, but we didn't?", src)
 		}
 
 		// Iterate through every item that matched the glob.
@@ -534,7 +534,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 						ChmodDirs:       nil,
 						ChownFiles:      nil,
 						ChmodFiles:      nil,
-						IgnoreDevices:   userns.RunningInUserNS(),
+						IgnoreDevices:   rsystem.RunningInUserNS(),
 					}
 					putErr = copier.Put(extractDirectory, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
 				}
@@ -602,43 +602,12 @@ func (b *Builder) userForRun(mountPoint string, userspec string) (specs.User, st
 // userForRun() does, except for the case where we're passed a single numeric
 // value, where we need to use that value for both the UID and the GID.
 func (b *Builder) userForCopy(mountPoint string, userspec string) (uint32, uint32, error) {
-	var (
-		user, group string
-		uid, gid    uint64
-		err         error
-	)
-
-	split := strings.SplitN(userspec, ":", 2)
-	user = split[0]
-	if len(split) > 1 {
-		group = split[1]
+	if id, err := strconv.ParseUint(userspec, 10, 32); err == nil {
+		return uint32(id), uint32(id), nil
 	}
-
-	// If userspec did not specify any values for user or group, then fail
-	if user == "" && group == "" {
-		return 0, 0, errors.Errorf("can't find uid for user %s", userspec)
-	}
-
-	// If userspec specifies values for user or group, check for numeric values
-	// and return early.  If not, then translate username/groupname
-	if user != "" {
-		uid, err = strconv.ParseUint(user, 10, 32)
-	}
-	if err == nil {
-		// default gid to uid
-		gid = uid
-		if group != "" {
-			gid, err = strconv.ParseUint(group, 10, 32)
-		}
-	}
-	// If err != nil, then user or group not numeric, check filesystem
-	if err == nil {
-		return uint32(uid), uint32(gid), nil
-	}
-
-	owner, _, err := b.userForRun(mountPoint, userspec)
+	user, _, err := b.userForRun(mountPoint, userspec)
 	if err != nil {
 		return 0xffffffff, 0xffffffff, err
 	}
-	return owner.UID, owner.GID, nil
+	return user.UID, user.GID, nil
 }

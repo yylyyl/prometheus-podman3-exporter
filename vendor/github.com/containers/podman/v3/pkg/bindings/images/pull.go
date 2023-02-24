@@ -3,6 +3,7 @@ package images
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,8 +14,7 @@ import (
 	"github.com/containers/podman/v3/pkg/auth"
 	"github.com/containers/podman/v3/pkg/bindings"
 	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/pkg/errors"
+	"github.com/hashicorp/go-multierror"
 )
 
 // Pull is the binding for libpod's v2 endpoints for pulling images.  Note that
@@ -65,7 +65,7 @@ func Pull(ctx context.Context, rawImage string, options *PullOptions) ([]string,
 
 	dec := json.NewDecoder(response.Body)
 	var images []string
-	var pullErrors []error
+	var mErr error
 	for {
 		var report entities.ImagePullReport
 		if err := dec.Decode(&report); err != nil {
@@ -77,7 +77,7 @@ func Pull(ctx context.Context, rawImage string, options *PullOptions) ([]string,
 
 		select {
 		case <-response.Request.Context().Done():
-			break
+			return images, mErr
 		default:
 			// non-blocking select
 		}
@@ -86,13 +86,13 @@ func Pull(ctx context.Context, rawImage string, options *PullOptions) ([]string,
 		case report.Stream != "":
 			fmt.Fprint(stderr, report.Stream)
 		case report.Error != "":
-			pullErrors = append(pullErrors, errors.New(report.Error))
+			mErr = multierror.Append(mErr, errors.New(report.Error))
 		case len(report.Images) > 0:
 			images = report.Images
 		case report.ID != "":
 		default:
-			return images, errors.Errorf("failed to parse pull results stream, unexpected input: %v", report)
+			return images, errors.New("failed to parse pull results stream, unexpected input")
 		}
 	}
-	return images, errorhandling.JoinErrors(pullErrors)
+	return images, mErr
 }

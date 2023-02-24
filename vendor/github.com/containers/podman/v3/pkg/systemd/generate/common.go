@@ -34,9 +34,9 @@ const headerTemplate = `# {{{{.ServiceName}}}}.service
 [Unit]
 Description=Podman {{{{.ServiceName}}}}.service
 Documentation=man:podman-generate-systemd(1)
-Wants=network-online.target
+Wants=network.target
 After=network-online.target
-RequiresMountsFor={{{{.RunRoot}}}}
+RequiresMountsFor={{{{.GraphRoot}}}} {{{{.RunRoot}}}}
 `
 
 // filterPodFlags removes --pod, --pod-id-file and --infra-conmon-pidfile from the specified command.
@@ -60,7 +60,7 @@ func filterPodFlags(command []string, argCount int) []string {
 	return processed
 }
 
-// filterCommonContainerFlags removes --sdnotify, --rm and --cgroups from the specified command.
+// filterCommonContainerFlags removes --conmon-pidfile, --cidfile and --cgroups from the specified command.
 // argCount is the number of last arguments which should not be filtered, e.g. the container entrypoint.
 func filterCommonContainerFlags(command []string, argCount int) []string {
 	processed := []string{}
@@ -68,16 +68,12 @@ func filterCommonContainerFlags(command []string, argCount int) []string {
 		s := command[i]
 
 		switch {
-		case s == "--rm":
-			// Boolean flags support --flag and --flag={true,false}.
-			continue
-		case s == "--sdnotify", s == "--cgroups", s == "--cidfile", s == "--restart":
+		case s == "--conmon-pidfile", s == "--cidfile", s == "--cgroups":
 			i++
 			continue
-		case strings.HasPrefix(s, "--rm="),
-			strings.HasPrefix(s, "--cgroups="),
+		case strings.HasPrefix(s, "--conmon-pidfile="),
 			strings.HasPrefix(s, "--cidfile="),
-			strings.HasPrefix(s, "--restart="):
+			strings.HasPrefix(s, "--cgroups="):
 			continue
 		}
 		processed = append(processed, s)
@@ -93,22 +89,17 @@ func filterCommonContainerFlags(command []string, argCount int) []string {
 // see: https://www.freedesktop.org/software/systemd/man/systemd.service.html#Command%20lines
 func escapeSystemdArguments(command []string) []string {
 	for i := range command {
-		command[i] = escapeSystemdArg(command[i])
+		command[i] = strings.ReplaceAll(command[i], "$", "$$")
+		command[i] = strings.ReplaceAll(command[i], "%", "%%")
+		if strings.ContainsAny(command[i], " \t") {
+			command[i] = strconv.Quote(command[i])
+		} else if strings.Contains(command[i], `\`) {
+			// strconv.Quote also escapes backslashes so
+			// we should replace only if strconv.Quote was not used
+			command[i] = strings.ReplaceAll(command[i], `\`, `\\`)
+		}
 	}
 	return command
-}
-
-func escapeSystemdArg(arg string) string {
-	arg = strings.ReplaceAll(arg, "$", "$$")
-	arg = strings.ReplaceAll(arg, "%", "%%")
-	if strings.ContainsAny(arg, " \t") {
-		arg = strconv.Quote(arg)
-	} else if strings.Contains(arg, `\`) {
-		// strconv.Quote also escapes backslashes so
-		// we should replace only if strconv.Quote was not used
-		arg = strings.ReplaceAll(arg, `\`, `\\`)
-	}
-	return arg
 }
 
 func removeDetachArg(args []string, argCount int) []string {

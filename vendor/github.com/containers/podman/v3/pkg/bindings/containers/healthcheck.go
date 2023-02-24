@@ -26,7 +26,5 @@ func RunHealthCheck(ctx context.Context, nameOrID string, options *HealthCheckOp
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-
 	return &status, response.Process(&status)
 }

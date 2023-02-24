@@ -162,7 +162,7 @@ func newHealthCheckLog(start, end time.Time, exitCode int, log string) define.He
 // updatedHealthCheckStatus updates the health status of the container
 // in the healthcheck log
 func (c *Container) updateHealthStatus(status string) error {
-	healthCheck, err := c.getHealthCheckLog()
+	healthCheck, err := c.GetHealthCheckLog()
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (c *Container) updateHealthStatus(status string) error {
 
 // UpdateHealthCheckLog parses the health check results and writes the log
 func (c *Container) updateHealthCheckLog(hcl define.HealthCheckLog, inStartPeriod bool) error {
-	healthCheck, err := c.getHealthCheckLog()
+	healthCheck, err := c.GetHealthCheckLog()
 	if err != nil {
 		return err
 	}
@@ -213,11 +213,10 @@ func (c *Container) healthCheckLogPath() string {
 	return filepath.Join(filepath.Dir(c.state.RunDir), "healthcheck.log")
 }
 
-// getHealthCheckLog returns HealthCheck results by reading the container's
+// GetHealthCheckLog returns HealthCheck results by reading the container's
 // health check log file.  If the health check log file does not exist, then
 // an empty healthcheck struct is returned
-// The caller should lock the container before this function is called.
-func (c *Container) getHealthCheckLog() (define.HealthCheckResults, error) {
+func (c *Container) GetHealthCheckLog() (define.HealthCheckResults, error) {
 	var healthCheck define.HealthCheckResults
 	if _, err := os.Stat(c.healthCheckLogPath()); os.IsNotExist(err) {
 		return healthCheck, nil
@@ -237,12 +236,7 @@ func (c *Container) HealthCheckStatus() (string, error) {
 	if !c.HasHealthCheck() {
 		return "", errors.Errorf("container %s has no defined healthcheck", c.ID())
 	}
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if err := c.syncContainer(); err != nil {
-		return "", err
-	}
-	results, err := c.getHealthCheckLog()
+	results, err := c.GetHealthCheckLog()
 	if err != nil {
 		return "", errors.Wrapf(err, "unable to get healthcheck log for %s", c.ID())
 	}

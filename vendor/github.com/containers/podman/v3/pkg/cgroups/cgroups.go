@@ -128,118 +128,26 @@ func init() {
 // getAvailableControllers get the available controllers
 func getAvailableControllers(exclude map[string]controllerHandler, cgroup2 bool) ([]controller, error) {
 	if cgroup2 {
-		controllers := []controller{}
-		controllersFile := cgroupRoot + "/cgroup.controllers"
-		// rootless cgroupv2: check available controllers for current user, systemd or servicescope will inherit
-		if rootless.IsRootless() {
-			userSlice, err := getCgroupPathForCurrentProcess()
-			if err != nil {
-				return controllers, err
-			}
-			//userSlice already contains '/' so not adding here
-			basePath := cgroupRoot + userSlice
-			controllersFile = fmt.Sprintf("%s/cgroup.controllers", basePath)
-		}
-		controllersFileBytes, err := ioutil.ReadFile(controllersFile)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed while reading controllers for cgroup v2 from %q", controllersFile)
-		}
-		for _, controllerName := range strings.Fields(string(controllersFileBytes)) {
-			c := controller{
-				name:    controllerName,
-				symlink: false,
-			}
-			controllers = append(controllers, c)
-		}
-		return controllers, nil
+		return nil, fmt.Errorf("getAvailableControllers not implemented yet for cgroup v2")
 	}
 
-	subsystems, _ := cgroupV1GetAllSubsystems()
+	infos, err := ioutil.ReadDir(cgroupRoot)
+	if err != nil {
+		return nil, err
+	}
 	controllers := []controller{}
-	// cgroupv1 and rootless: No subsystem is available: delegation is unsafe.
-	if rootless.IsRootless() {
-		return controllers, nil
-	}
-
-	for _, name := range subsystems {
+	for _, i := range infos {
+		name := i.Name()
 		if _, found := exclude[name]; found {
-			continue
-		}
-		fileInfo, err := os.Stat(cgroupRoot + "/" + name)
-		if err != nil {
 			continue
 		}
 		c := controller{
 			name:    name,
-			symlink: !fileInfo.IsDir(),
+			symlink: !i.IsDir(),
 		}
 		controllers = append(controllers, c)
 	}
-
 	return controllers, nil
-}
-
-// GetAvailableControllers get string:bool map of all the available controllers
-func GetAvailableControllers(exclude map[string]controllerHandler, cgroup2 bool) ([]string, error) {
-	availableControllers, err := getAvailableControllers(exclude, cgroup2)
-	if err != nil {
-		return nil, err
-	}
-	controllerList := []string{}
-	for _, controller := range availableControllers {
-		controllerList = append(controllerList, controller.name)
-	}
-
-	return controllerList, nil
-}
-
-func cgroupV1GetAllSubsystems() ([]string, error) {
-	f, err := os.Open("/proc/cgroups")
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	subsystems := []string{}
-
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		text := s.Text()
-		if text[0] != '#' {
-			parts := strings.Fields(text)
-			if len(parts) >= 4 && parts[3] != "0" {
-				subsystems = append(subsystems, parts[0])
-			}
-		}
-	}
-	if err := s.Err(); err != nil {
-		return nil, err
-	}
-	return subsystems, nil
-}
-
-func getCgroupPathForCurrentProcess() (string, error) {
-	path := fmt.Sprintf("/proc/%d/cgroup", os.Getpid())
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	cgroupPath := ""
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		text := s.Text()
-		procEntries := strings.SplitN(text, "::", 2)
-		// set process cgroupPath only if entry is valid
-		if len(procEntries) > 1 {
-			cgroupPath = procEntries[1]
-		}
-	}
-	if err := s.Err(); err != nil {
-		return cgroupPath, err
-	}
-	return cgroupPath, nil
 }
 
 // getCgroupv1Path is a helper function to get the cgroup v1 path
@@ -461,10 +369,10 @@ func (c *CgroupControl) CreateSystemdUnit(path string) error {
 	return systemdCreate(path, conn)
 }
 
-// GetUserConnection returns a user connection to D-BUS
+// GetUserConnection returns an user connection to D-BUS
 func GetUserConnection(uid int) (*systemdDbus.Conn, error) {
 	return systemdDbus.NewConnection(func() (*dbus.Conn, error) {
-		return dbusAuthConnection(uid, dbus.SessionBusPrivateNoAutoStartup)
+		return dbusAuthConnection(uid, dbus.SessionBusPrivate)
 	})
 }
 

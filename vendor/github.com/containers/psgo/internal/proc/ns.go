@@ -20,8 +20,14 @@ import (
 	"io"
 	"os"
 
-	"github.com/containers/storage/pkg/idtools"
+	"github.com/pkg/errors"
 )
+
+type IDMap struct {
+	ContainerID int
+	HostID      int
+	Size        int
+}
 
 // ParsePIDNamespace returns the content of /proc/$pid/ns/pid.
 func ParsePIDNamespace(pid string) (string, error) {
@@ -42,32 +48,32 @@ func ParseUserNamespace(pid string) (string, error) {
 }
 
 // ReadMappings reads the user namespace mappings at the specified path
-func ReadMappings(path string) ([]idtools.IDMap, error) {
+func ReadMappings(path string) ([]IDMap, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "cannot open %s", path)
 	}
 	defer file.Close()
 
-	var mappings []idtools.IDMap
+	mappings := []IDMap{}
 
 	buf := bufio.NewReader(file)
 	for {
 		line, _, err := buf.ReadLine()
 		if err != nil {
-			if err == io.EOF { //nolint:errorlint // False positive, see https://github.com/polyfloyd/go-errorlint/pull/12
+			if err == io.EOF {
 				return mappings, nil
 			}
-			return nil, fmt.Errorf("cannot read line from %s: %w", path, err)
+			return nil, errors.Wrapf(err, "cannot read line from %s", path)
 		}
 		if line == nil {
 			return mappings, nil
 		}
 
-		var containerID, hostID, size int
+		containerID, hostID, size := 0, 0, 0
 		if _, err := fmt.Sscanf(string(line), "%d %d %d", &containerID, &hostID, &size); err != nil {
-			return nil, fmt.Errorf("cannot parse %s: %w", string(line), err)
+			return nil, errors.Wrapf(err, "cannot parse %s", string(line))
 		}
-		mappings = append(mappings, idtools.IDMap{ContainerID: containerID, HostID: hostID, Size: size})
+		mappings = append(mappings, IDMap{ContainerID: containerID, HostID: hostID, Size: size})
 	}
 }

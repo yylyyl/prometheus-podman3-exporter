@@ -15,11 +15,10 @@ import (
 	"github.com/containers/buildah"
 	"github.com/containers/common/pkg/apparmor"
 	"github.com/containers/common/pkg/seccomp"
-	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/libpod/linkmode"
-	"github.com/containers/podman/v3/libpod/network"
 	"github.com/containers/podman/v3/pkg/cgroups"
+	registries2 "github.com/containers/podman/v3/pkg/registries"
 	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/system"
@@ -50,32 +49,20 @@ func (r *Runtime) info() (*define.Info, error) {
 	}
 	info.Store = storeInfo
 	registries := make(map[string]interface{})
-
-	sys := r.SystemContext()
-	data, err := sysregistriesv2.GetRegistries(sys)
+	data, err := registries2.GetRegistriesData()
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting registries")
 	}
 	for _, reg := range data {
 		registries[reg.Prefix] = reg
 	}
-	regs, err := sysregistriesv2.UnqualifiedSearchRegistries(sys)
+	regs, err := registries2.GetRegistries()
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting registries")
 	}
 	if len(regs) > 0 {
 		registries["search"] = regs
 	}
-	volumePlugins := make([]string, 0, len(r.config.Engine.VolumePlugins)+1)
-	// the local driver always exists
-	volumePlugins = append(volumePlugins, "local")
-	for plugin := range r.config.Engine.VolumePlugins {
-		volumePlugins = append(volumePlugins, plugin)
-	}
-	info.Plugins.Volume = volumePlugins
-	// TODO move this into the new network interface
-	info.Plugins.Network = []string{network.BridgeNetworkDriver, network.MacVLANNetworkDriver}
-	info.Plugins.Log = logDrivers
 
 	info.Registries = registries
 	return &info, nil
@@ -100,46 +87,25 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting hostname")
 	}
-
-	seccompProfilePath, err := DefaultSeccompPath()
-	if err != nil {
-		return nil, errors.Wrapf(err, "error getting Seccomp profile path")
-	}
-
-	// CGroups version
-	unified, err := cgroups.IsCgroup2UnifiedMode()
-	if err != nil {
-		return nil, errors.Wrapf(err, "error reading cgroups mode")
-	}
-
-	// Get Map of all available controllers
-	availableControllers, err := cgroups.GetAvailableControllers(nil, unified)
-	if err != nil {
-		return nil, errors.Wrapf(err, "error getting available cgroup controllers")
-	}
-
 	info := define.HostInfo{
-		Arch:              runtime.GOARCH,
-		BuildahVersion:    buildah.Version,
-		CgroupManager:     r.config.Engine.CgroupManager,
-		CgroupControllers: availableControllers,
-		Linkmode:          linkmode.Linkmode(),
-		CPUs:              runtime.NumCPU(),
-		Distribution:      hostDistributionInfo,
-		LogDriver:         r.config.Containers.LogDriver,
-		EventLogger:       r.eventer.String(),
-		Hostname:          host,
-		IDMappings:        define.IDMappings{},
-		Kernel:            kv,
-		MemFree:           mi.MemFree,
-		MemTotal:          mi.MemTotal,
-		OS:                runtime.GOOS,
+		Arch:           runtime.GOARCH,
+		BuildahVersion: buildah.Version,
+		CgroupManager:  r.config.Engine.CgroupManager,
+		Linkmode:       linkmode.Linkmode(),
+		CPUs:           runtime.NumCPU(),
+		Distribution:   hostDistributionInfo,
+		EventLogger:    r.eventer.String(),
+		Hostname:       host,
+		IDMappings:     define.IDMappings{},
+		Kernel:         kv,
+		MemFree:        mi.MemFree,
+		MemTotal:       mi.MemTotal,
+		OS:             runtime.GOOS,
 		Security: define.SecurityInfo{
 			AppArmorEnabled:     apparmor.IsEnabled(),
 			DefaultCapabilities: strings.Join(r.config.Containers.DefaultCapabilities, ","),
 			Rootless:            rootless.IsRootless(),
 			SECCOMPEnabled:      seccomp.IsEnabled(),
-			SECCOMPProfilePath:  seccompProfilePath,
 			SELinuxEnabled:      selinux.GetEnabled(),
 		},
 		Slirp4NetNS: define.SlirpInfo{},
@@ -147,30 +113,30 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 		SwapTotal:   mi.SwapTotal,
 	}
 
+	// CGroups version
+	unified, err := cgroups.IsCgroup2UnifiedMode()
+	if err != nil {
+		return nil, errors.Wrapf(err, "error reading cgroups mode")
+	}
 	cgroupVersion := "v1"
 	if unified {
 		cgroupVersion = "v2"
 	}
 	info.CGroupsVersion = cgroupVersion
 
-	slirp4netnsPath := r.config.Engine.NetworkCmdPath
-	if slirp4netnsPath == "" {
-		slirp4netnsPath, _ = exec.LookPath("slirp4netns")
-	}
-	if slirp4netnsPath != "" {
-		version, err := programVersion(slirp4netnsPath)
-		if err != nil {
-			logrus.Warnf("Failed to retrieve program version for %s: %v", slirp4netnsPath, err)
-		}
-		program := define.SlirpInfo{
-			Executable: slirp4netnsPath,
-			Package:    packageVersion(slirp4netnsPath),
-			Version:    version,
-		}
-		info.Slirp4NetNS = program
-	}
-
 	if rootless.IsRootless() {
+		if path, err := exec.LookPath("slirp4netns"); err == nil {
+			version, err := programVersion(path)
+			if err != nil {
+				logrus.Warnf("Failed to retrieve program version for %s: %v", path, err)
+			}
+			program := define.SlirpInfo{
+				Executable: path,
+				Package:    packageVersion(path),
+				Version:    version,
+			}
+			info.Slirp4NetNS = program
+		}
 		uidmappings, err := rootless.ReadMappingsProc("/proc/self/uid_map")
 		if err != nil {
 			return nil, errors.Wrapf(err, "error reading uid mappings")
@@ -333,7 +299,7 @@ func readKernelVersion() (string, error) {
 		return "", err
 	}
 	f := bytes.Fields(buf)
-	if len(f) < 3 {
+	if len(f) < 2 {
 		return string(bytes.TrimSpace(buf)), nil
 	}
 	return string(f[2]), nil
@@ -370,14 +336,8 @@ func (r *Runtime) GetHostDistributionInfo() define.DistributionInfo {
 		if strings.HasPrefix(l.Text(), "ID=") {
 			dist.Distribution = strings.TrimPrefix(l.Text(), "ID=")
 		}
-		if strings.HasPrefix(l.Text(), "VARIANT_ID=") {
-			dist.Variant = strings.Trim(strings.TrimPrefix(l.Text(), "VARIANT_ID="), "\"")
-		}
 		if strings.HasPrefix(l.Text(), "VERSION_ID=") {
 			dist.Version = strings.Trim(strings.TrimPrefix(l.Text(), "VERSION_ID="), "\"")
-		}
-		if strings.HasPrefix(l.Text(), "VERSION_CODENAME=") {
-			dist.Codename = strings.Trim(strings.TrimPrefix(l.Text(), "VERSION_CODENAME="), "\"")
 		}
 	}
 	return dist

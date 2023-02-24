@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/common/libimage"
+	"github.com/containers/image/v5/manifest"
 	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/image"
 	ann "github.com/containers/podman/v3/pkg/annotations"
 	envLib "github.com/containers/podman/v3/pkg/env"
 	"github.com/containers/podman/v3/pkg/signal"
@@ -21,31 +21,74 @@ import (
 // Fill any missing parts of the spec generator (e.g. from the image).
 // Returns a set of warnings or any fatal error that occurred.
 func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerator) ([]string, error) {
+	var (
+		newImage *image.Image
+		err      error
+	)
+
 	// Only add image configuration if we have an image
-	var newImage *libimage.Image
-	var inspectData *libimage.ImageData
-	var err error
 	if s.Image != "" {
-		newImage, _, err = r.LibimageRuntime().LookupImage(s.Image, nil)
+		newImage, err = r.ImageRuntime().NewFromLocal(s.Image)
 		if err != nil {
 			return nil, err
 		}
 
-		inspectData, err = newImage.Inspect(ctx, false)
+		_, mediaType, err := newImage.Manifest(ctx)
 		if err != nil {
-			return nil, err
+			if errors.Cause(err) != image.ErrImageIsBareList {
+				return nil, err
+			}
+			// if err is not runnable image
+			// use the local store image with repo@digest matches with the list, if exists
+			manifestByte, manifestType, err := newImage.GetManifest(ctx, nil)
+			if err != nil {
+				return nil, err
+			}
+			list, err := manifest.ListFromBlob(manifestByte, manifestType)
+			if err != nil {
+				return nil, err
+			}
+			images, err := r.ImageRuntime().GetImages()
+			if err != nil {
+				return nil, err
+			}
+			findLocal := false
+			listDigest, err := list.ChooseInstance(r.SystemContext())
+			if err != nil {
+				return nil, err
+			}
+			for _, img := range images {
+				for _, imageDigest := range img.Digests() {
+					if imageDigest == listDigest {
+						newImage = img
+						s.Image = img.ID()
+						mediaType = manifestType
+						findLocal = true
+						logrus.Debug("image contains manifest list, using image from local storage")
+						break
+					}
+				}
+			}
+			if !findLocal {
+				return nil, image.ErrImageIsBareList
+			}
 		}
 
-		if s.HealthConfig == nil {
-			// NOTE: the health check is only set for Docker images
-			// but inspect will take care of it.
-			s.HealthConfig = inspectData.HealthCheck
+		if s.HealthConfig == nil && mediaType == manifest.DockerV2Schema2MediaType {
+			s.HealthConfig, err = newImage.GetHealthCheck(ctx)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		// Image stop signal
 		if s.StopSignal == nil {
-			if inspectData.Config.StopSignal != "" {
-				sig, err := signal.ParseSignalNameOrNumber(inspectData.Config.StopSignal)
+			stopSignal, err := newImage.StopSignal(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if stopSignal != "" {
+				sig, err := signal.ParseSignalNameOrNumber(stopSignal)
 				if err != nil {
 					return nil, err
 				}
@@ -70,10 +113,15 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	var envs map[string]string
 
 	// Image Environment defaults
-	if inspectData != nil {
+	if newImage != nil {
 		// Image envs from the image if they don't exist
 		// already, overriding the default environments
-		envs, err = envLib.ParseSlice(inspectData.Config.Env)
+		imageEnvs, err := newImage.Env(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		envs, err = envLib.ParseSlice(imageEnvs)
 		if err != nil {
 			return nil, errors.Wrap(err, "Env fields from image failed to parse")
 		}
@@ -127,7 +175,11 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		}
 
 		// Add annotations from the image
-		for k, v := range inspectData.Annotations {
+		imgAnnotations, err := newImage.Annotations(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range imgAnnotations {
 			annotations[k] = v
 		}
 	}
@@ -140,29 +192,10 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	//   VM, which is the default behavior
 	// - "container" denotes the container should join the VM of the SandboxID
 	//   (the infra container)
+
 	if len(s.Pod) > 0 {
 		annotations[ann.SandboxID] = s.Pod
 		annotations[ann.ContainerType] = ann.ContainerTypeContainer
-		// Check if this is an init-ctr and if so, check if
-		// the pod is running.  we do not want to add init-ctrs to
-		// a running pod because it creates confusion for us.
-		if len(s.InitContainerType) > 0 {
-			p, err := r.LookupPod(s.Pod)
-			if err != nil {
-				return nil, err
-			}
-			containerStatuses, err := p.Status()
-			if err != nil {
-				return nil, err
-			}
-			// If any one of the containers is running, the pod is considered to be
-			// running
-			for _, con := range containerStatuses {
-				if con == define.ContainerStateRunning {
-					return nil, errors.New("cannot add init-ctr to a running pod")
-				}
-			}
-		}
 	}
 
 	for _, v := range rtc.Containers.Annotations {
@@ -188,8 +221,11 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		s.SeccompProfilePath = p
 	}
 
-	if len(s.User) == 0 && inspectData != nil {
-		s.User = inspectData.Config.User
+	if len(s.User) == 0 && newImage != nil {
+		s.User, err = newImage.User(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := finishThrottleDevices(s); err != nil {
 		return nil, err
@@ -223,17 +259,6 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	// set log-driver from common if not already set
 	if len(s.LogConfiguration.Driver) < 1 {
 		s.LogConfiguration.Driver = rtc.Containers.LogDriver
-	}
-	if len(rtc.Containers.LogTag) > 0 {
-		if s.LogConfiguration.Driver != define.JSONLogging {
-			if s.LogConfiguration.Options == nil {
-				s.LogConfiguration.Options = make(map[string]string)
-			}
-
-			s.LogConfiguration.Options["tag"] = rtc.Containers.LogTag
-		} else {
-			logrus.Warnf("log_tag %q is not allowed with %q log_driver", rtc.Containers.LogTag, define.JSONLogging)
-		}
 	}
 
 	warnings, err := verifyContainerResources(s)

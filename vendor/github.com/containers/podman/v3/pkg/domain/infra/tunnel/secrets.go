@@ -11,14 +11,8 @@ import (
 )
 
 func (ic *ContainerEngine) SecretCreate(ctx context.Context, name string, reader io.Reader, options entities.SecretCreateOptions) (*entities.SecretCreateReport, error) {
-	opts := new(secrets.CreateOptions).
-		WithDriver(options.Driver).
-		WithDriverOpts(options.DriverOpts).
-		WithName(name)
-	created, err := secrets.Create(ic.ClientCtx, reader, opts)
-	if err != nil {
-		return nil, err
-	}
+	opts := new(secrets.CreateOptions).WithDriver(options.Driver).WithName(name)
+	created, _ := secrets.Create(ic.ClientCtx, reader, opts)
 	return created, nil
 }
 
@@ -28,7 +22,7 @@ func (ic *ContainerEngine) SecretInspect(ctx context.Context, nameOrIDs []string
 	for _, name := range nameOrIDs {
 		inspected, err := secrets.Inspect(ic.ClientCtx, name, nil)
 		if err != nil {
-			errModel, ok := err.(*errorhandling.ErrorModel)
+			errModel, ok := err.(errorhandling.ErrorModel)
 			if !ok {
 				return nil, nil, err
 			}
@@ -43,9 +37,8 @@ func (ic *ContainerEngine) SecretInspect(ctx context.Context, nameOrIDs []string
 	return allInspect, errs, nil
 }
 
-func (ic *ContainerEngine) SecretList(ctx context.Context, opts entities.SecretListRequest) ([]*entities.SecretInfoReport, error) {
-	options := new(secrets.ListOptions).WithFilters(opts.Filters)
-	secrs, _ := secrets.List(ic.ClientCtx, options)
+func (ic *ContainerEngine) SecretList(ctx context.Context) ([]*entities.SecretInfoReport, error) {
+	secrs, _ := secrets.List(ic.ClientCtx, nil)
 	return secrs, nil
 }
 
@@ -67,7 +60,7 @@ func (ic *ContainerEngine) SecretRm(ctx context.Context, nameOrIDs []string, opt
 	for _, name := range nameOrIDs {
 		secret, err := secrets.Inspect(ic.ClientCtx, name, nil)
 		if err != nil {
-			errModel, ok := err.(*errorhandling.ErrorModel)
+			errModel, ok := err.(errorhandling.ErrorModel)
 			if !ok {
 				return nil, err
 			}

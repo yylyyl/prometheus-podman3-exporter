@@ -33,7 +33,6 @@ func NewImageEngine(facts *entities.PodmanConfig) (entities.ImageEngine, error) 
 		r, err := NewLibpodImageRuntime(facts.FlagSet, facts)
 		return r, err
 	case entities.TunnelMode:
-		// TODO: look at me!
 		ctx, err := bindings.NewConnectionWithIdentity(context.Background(), facts.URI, facts.Identity)
 		return &tunnel.ImageEngine{ClientCtx: ctx}, err
 	}

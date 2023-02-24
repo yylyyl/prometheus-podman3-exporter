@@ -22,6 +22,14 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+var (
+	BasePath = &url.URL{
+		Scheme: "http",
+		Host:   "d",
+		Path:   "/v" + version.APIVersion[version.Libpod][version.CurrentAPI].String() + "/libpod",
+	}
+)
+
 type APIResponse struct {
 	*http.Response
 	Request *http.Request
@@ -56,7 +64,7 @@ func NewConnection(ctx context.Context, uri string) (context.Context, error) {
 	return NewConnectionWithIdentity(ctx, uri, "")
 }
 
-// NewConnectionWithIdentity takes a URI as a string and returns a context with the
+// NewConnection takes a URI as a string and returns a context with the
 // Connection embedded as a value.  This context needs to be passed to each
 // endpoint to work correctly.
 //
@@ -112,12 +120,12 @@ func NewConnectionWithIdentity(ctx context.Context, uri string, identity string)
 		return nil, errors.Errorf("unable to create connection. %q is not a supported schema", _url.Scheme)
 	}
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to connect to Podman. failed to create %sClient", _url.Scheme)
+		return nil, errors.Wrapf(err, "failed to create %sClient", _url.Scheme)
 	}
 
 	ctx = context.WithValue(ctx, clientKey, &connection)
 	if err := pingNewConnection(ctx); err != nil {
-		return nil, errors.Wrap(err, "unable to connect to Podman socket")
+		return nil, errors.Wrap(err, "cannot connect to the Podman socket, please verify that Podman REST API service is running")
 	}
 	return ctx, nil
 }
@@ -149,7 +157,6 @@ func pingNewConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
 
 	if response.StatusCode == http.StatusOK {
 		versionHdr := response.Header.Get("Libpod-API-Version")
@@ -311,24 +318,16 @@ func (c *Connection) DoRequest(httpBody io.Reader, httpMethod, endpoint string, 
 		err      error
 		response *http.Response
 	)
-
-	params := make([]interface{}, len(pathValues)+3)
-
-	// Including the semver suffices breaks older services... so do not include them
-	v := version.APIVersion[version.Libpod][version.CurrentAPI]
-	params[0] = v.Major
-	params[1] = v.Minor
-	params[2] = v.Patch
+	safePathValues := make([]interface{}, len(pathValues))
+	// Make sure path values are http url safe
 	for i, pv := range pathValues {
-		// url.URL lacks the semantics for escaping embedded path parameters... so we manually
-		//   escape each one and assume the caller included the correct formatting in "endpoint"
-		params[i+3] = url.PathEscape(pv)
+		safePathValues[i] = url.PathEscape(pv)
 	}
-
-	uri := fmt.Sprintf("http://d/v%d.%d.%d/libpod"+endpoint, params...)
-	logrus.Debugf("DoRequest Method: %s URI: %v", httpMethod, uri)
-
-	req, err := http.NewRequestWithContext(context.WithValue(context.Background(), clientKey, c), httpMethod, uri, httpBody)
+	// Lets eventually use URL for this which might lead to safer
+	// usage
+	safeEndpoint := fmt.Sprintf(endpoint, safePathValues...)
+	e := BasePath.String() + safeEndpoint
+	req, err := http.NewRequest(httpMethod, e, httpBody)
 	if err != nil {
 		return nil, err
 	}
@@ -338,8 +337,9 @@ func (c *Connection) DoRequest(httpBody io.Reader, httpMethod, endpoint string, 
 	for key, val := range header {
 		req.Header.Set(key, val)
 	}
+	req = req.WithContext(context.WithValue(context.Background(), clientKey, c))
 	// Give the Do three chances in the case of a comm/service hiccup
-	for i := 1; i <= 3; i++ {
+	for i := 0; i < 3; i++ {
 		response, err = c.Client.Do(req) // nolint
 		if err == nil {
 			break
@@ -359,7 +359,7 @@ func FiltersToString(filters map[string][]string) (string, error) {
 	return jsoniter.MarshalToString(lowerCaseKeys)
 }
 
-// IsInformational returns true if the response code is 1xx
+// IsInformation returns true if the response code is 1xx
 func (h *APIResponse) IsInformational() bool {
 	return h.Response.StatusCode/100 == 1
 }
@@ -377,11 +377,6 @@ func (h *APIResponse) IsRedirection() bool {
 // IsClientError returns true if the response code is 4xx
 func (h *APIResponse) IsClientError() bool {
 	return h.Response.StatusCode/100 == 4
-}
-
-// IsConflictError returns true if the response code is 409
-func (h *APIResponse) IsConflictError() bool {
-	return h.Response.StatusCode == 409
 }
 
 // IsServerError returns true if the response code is 5xx

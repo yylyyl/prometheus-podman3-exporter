@@ -6,16 +6,15 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/containernetworking/cni/pkg/types"
 	cnitypes "github.com/containernetworking/cni/pkg/types/current"
-	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/libpod/lock"
+	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/cri-o/ocicni/pkg/ocicni"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
@@ -127,12 +126,6 @@ type Container struct {
 
 	// This is true if a container is restored from a checkpoint.
 	restoreFromCheckpoint bool
-
-	// Used to query the NOTIFY_SOCKET once along with setting up
-	// mounts etc.
-	notifySocket string
-
-	slirp4netnsSubnet *net.IPNet
 }
 
 // ContainerState contains the current state of the container
@@ -161,9 +154,6 @@ type ContainerState struct {
 	// OOMKilled indicates that the container was killed as it ran out of
 	// memory
 	OOMKilled bool `json:"oomKilled,omitempty"`
-	// Checkpointed indicates that the container was stopped by a checkpoint
-	// operation.
-	Checkpointed bool `json:"checkpointed,omitempty"`
 	// PID is the PID of a running container
 	PID int `json:"pid,omitempty"`
 	// ConmonPID is the PID of the container's conmon
@@ -243,20 +233,6 @@ type ContainerImageVolume struct {
 	Dest string `json:"dest"`
 	// ReadWrite sets the volume writable.
 	ReadWrite bool `json:"rw"`
-}
-
-// ContainerSecret is a secret that is mounted in a container
-type ContainerSecret struct {
-	// Secret is the secret
-	*secrets.Secret
-	// UID is the UID of the secret file
-	UID uint32
-	// GID is the GID of the secret file
-	GID uint32
-	// Mode is the mode of the secret file
-	Mode uint32
-	// Secret target inside container
-	Target string
 }
 
 // ContainerNetworkDescriptions describes the relationship between the CNI
@@ -968,20 +944,9 @@ func (c *Container) cGroupPath() (string, error) {
 	// is the libpod-specific one we're looking for.
 	//
 	// See #8397 on the need for the longest-path look up.
-	//
-	// And another workaround for containers running systemd as the payload.
-	// containers running systemd moves themselves into a child subgroup of
-	// the named systemd cgroup hierarchy.  Ignore any named cgroups during
-	// the lookup.
-	// See #10602 for more details.
 	procPath := fmt.Sprintf("/proc/%d/cgroup", c.state.PID)
 	lines, err := ioutil.ReadFile(procPath)
 	if err != nil {
-		// If the file doesn't exist, it means the container could have been terminated
-		// so report it.
-		if os.IsNotExist(err) {
-			return "", errors.Wrapf(define.ErrCtrStopped, "cannot get cgroup path unless container %s is running", c.ID())
-		}
 		return "", err
 	}
 
@@ -994,10 +959,6 @@ func (c *Container) cGroupPath() (string, error) {
 			logrus.Debugf("Error parsing cgroup: expected 3 fields but got %d: %s", len(fields), procPath)
 			continue
 		}
-		// Ignore named cgroups like name=systemd.
-		if bytes.Contains(fields[1], []byte("=")) {
-			continue
-		}
 		path := string(fields[2])
 		if len(path) > len(cgroupPath) {
 			cgroupPath = path
@@ -1006,29 +967,6 @@ func (c *Container) cGroupPath() (string, error) {
 
 	if len(cgroupPath) == 0 {
 		return "", errors.Errorf("could not find any cgroup in %q", procPath)
-	}
-
-	cgroupManager := c.CgroupManager()
-	switch {
-	case c.config.CgroupsMode == cgroupSplit:
-		name := fmt.Sprintf("/libpod-payload-%s/", c.ID())
-		if index := strings.LastIndex(cgroupPath, name); index >= 0 {
-			return cgroupPath[:index+len(name)-1], nil
-		}
-	case cgroupManager == config.CgroupfsCgroupsManager:
-		name := fmt.Sprintf("/libpod-%s/", c.ID())
-		if index := strings.LastIndex(cgroupPath, name); index >= 0 {
-			return cgroupPath[:index+len(name)-1], nil
-		}
-	case cgroupManager == config.SystemdCgroupsManager:
-		// When running under systemd, try to detect the scope that was requested
-		// to be created.  It improves the heuristic since we report the first
-		// cgroup that was created instead of the cgroup where PID 1 might have
-		// moved to.
-		name := fmt.Sprintf("/libpod-%s.scope/", c.ID())
-		if index := strings.LastIndex(cgroupPath, name); index >= 0 {
-			return cgroupPath[:index+len(name)-1], nil
-		}
 	}
 
 	return cgroupPath, nil
@@ -1059,8 +997,8 @@ func (c *Container) RWSize() (int64, error) {
 }
 
 // IDMappings returns the UID/GID mapping used for the container
-func (c *Container) IDMappings() storage.IDMappingOptions {
-	return c.config.IDMappings
+func (c *Container) IDMappings() (storage.IDMappingOptions, error) {
+	return c.config.IDMappings, nil
 }
 
 // RootUID returns the root user mapping from container
@@ -1092,11 +1030,6 @@ func (c *Container) RootGID() int {
 // IsInfra returns whether the container is an infra container
 func (c *Container) IsInfra() bool {
 	return c.config.IsInfra
-}
-
-// IsInitCtr returns whether the container is an init container
-func (c *Container) IsInitCtr() bool {
-	return len(c.config.InitContainerType) > 0
 }
 
 // IsReadOnly returns whether the container is running in read only mode
@@ -1191,7 +1124,7 @@ func (c *Container) Umask() string {
 }
 
 //Secrets return the secrets in the container
-func (c *Container) Secrets() []*ContainerSecret {
+func (c *Container) Secrets() []*secrets.Secret {
 	return c.config.Secrets
 }
 
@@ -1217,51 +1150,11 @@ func (c *Container) Networks() ([]string, bool, error) {
 	return c.networks()
 }
 
-// NetworkMode gets the configured network mode for the container.
-// Get actual value from the database
-func (c *Container) NetworkMode() string {
-	networkMode := ""
-	ctrSpec := c.config.Spec
-
-	switch {
-	case c.config.CreateNetNS:
-		// We actually store the network
-		// mode for Slirp and Bridge, so
-		// we can just use that
-		networkMode = string(c.config.NetMode)
-	case c.config.NetNsCtr != "":
-		networkMode = fmt.Sprintf("container:%s", c.config.NetNsCtr)
-	default:
-		// Find the spec's network namespace.
-		// If there is none, it's host networking.
-		// If there is one and it has a path, it's "ns:".
-		foundNetNS := false
-		for _, ns := range ctrSpec.Linux.Namespaces {
-			if ns.Type == spec.NetworkNamespace {
-				foundNetNS = true
-				if ns.Path != "" {
-					networkMode = fmt.Sprintf("ns:%s", ns.Path)
-				} else {
-					// We're making a network ns,  but not
-					// configuring with Slirp or CNI. That
-					// means it's --net=none
-					networkMode = "none"
-				}
-				break
-			}
-		}
-		if !foundNetNS {
-			networkMode = "host"
-		}
-	}
-	return networkMode
-}
-
 // Unlocked accessor for networks
 func (c *Container) networks() ([]string, bool, error) {
 	networks, err := c.runtime.state.GetNetworks(c)
 	if err != nil && errors.Cause(err) == define.ErrNoSuchNetwork {
-		if len(c.config.Networks) == 0 && c.config.NetMode.IsBridge() {
+		if len(c.config.Networks) == 0 && !rootless.IsRootless() {
 			return []string{c.runtime.netPlugin.GetDefaultNetworkName()}, true, nil
 		}
 		return c.config.Networks, false, nil

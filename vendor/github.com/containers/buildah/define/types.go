@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -29,7 +28,7 @@ const (
 	Package = "buildah"
 	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
 	// too.
-	Version = "1.23.1"
+	Version = "1.20.1"
 
 	// DefaultRuntime if containers.conf fails.
 	DefaultRuntime = "runc"
@@ -112,11 +111,7 @@ func TempDirForURL(dir, prefix, url string) (name string, subdir string, err err
 	if err != nil {
 		return "", "", errors.Wrapf(err, "error creating temporary directory for %q", url)
 	}
-	urlParsed, err := urlpkg.Parse(url)
-	if err != nil {
-		return "", "", errors.Wrapf(err, "error parsing url %q", url)
-	}
-	if strings.HasPrefix(url, "git://") || strings.HasSuffix(urlParsed.Path, ".git") {
+	if strings.HasPrefix(url, "git://") || strings.HasSuffix(url, ".git") {
 		err = cloneToDirectory(url, name)
 		if err != nil {
 			if err2 := os.RemoveAll(name); err2 != nil {
@@ -161,6 +156,9 @@ func TempDirForURL(dir, prefix, url string) (name string, subdir string, err err
 }
 
 func cloneToDirectory(url, dir string) error {
+	if !strings.HasPrefix(url, "git://") && !strings.HasSuffix(url, ".git") {
+		url = "git://" + url
+	}
 	gitBranch := strings.Split(url, "#")
 	var cmd *exec.Cmd
 	if len(gitBranch) < 2 {

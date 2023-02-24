@@ -19,14 +19,17 @@ const DefaultRootAPIPath = "/run/podman/podman.sock"
 const DefaultRootAPIAddress = "unix:" + DefaultRootAPIPath
 
 type CliCommand struct {
+	Mode    []entities.EngineMode
 	Command *cobra.Command
 	Parent  *cobra.Command
 }
 
+const ExecErrorCodeGeneric = 125
+
 var (
 	cliCtx          context.Context
 	containerEngine entities.ContainerEngine
-	exitCode        = 0
+	exitCode        = ExecErrorCodeGeneric
 	imageEngine     entities.ImageEngine
 
 	// Commands holds the cobra.Commands to present to the user, including

@@ -259,9 +259,7 @@ func authConfigsToAuthFile(authConfigs map[string]types.DockerAuthConfig) (strin
 	// tested, and we make sure to use the same code as the image backend.
 	sys := types.SystemContext{AuthFilePath: authFilePath}
 	for server, config := range authConfigs {
-		server = normalize(server)
-
-		// Note that we do not validate the credentials here. We assume
+		// Note that we do not validate the credentials here. Wassume
 		// that all credentials are valid. They'll be used on demand
 		// later.
 		if err := imageAuth.SetAuthentication(&sys, server, config.Username, config.Password); err != nil {
@@ -270,22 +268,6 @@ func authConfigsToAuthFile(authConfigs map[string]types.DockerAuthConfig) (strin
 	}
 
 	return authFilePath, nil
-}
-
-// normalize takes a server and removes the leading "http[s]://" prefix as well
-// as removes path suffixes from docker registries.
-func normalize(server string) string {
-	stripped := strings.TrimPrefix(server, "http://")
-	stripped = strings.TrimPrefix(stripped, "https://")
-
-	/// Normalize docker registries
-	if strings.HasPrefix(stripped, "index.docker.io/") ||
-		strings.HasPrefix(stripped, "registry-1.docker.io/") ||
-		strings.HasPrefix(stripped, "docker.io/") {
-		stripped = strings.SplitN(stripped, "/", 2)[0]
-	}
-
-	return stripped
 }
 
 // dockerAuthToImageAuth converts a docker auth config to one we're using

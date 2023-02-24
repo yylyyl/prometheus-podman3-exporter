@@ -37,8 +37,6 @@ type Copy struct {
 type Run struct {
 	Shell bool
 	Args  []string
-	// Mounts are mounts specified through the --mount flag inside the Containerfile
-	Mounts []string
 }
 
 type Executor interface {
@@ -69,7 +67,7 @@ func (logExecutor) Copy(excludes []string, copies ...Copy) error {
 }
 
 func (logExecutor) Run(run Run, config docker.Config) error {
-	log.Printf("RUN %v %v %t (%v)", run.Args, run.Mounts, run.Shell, config.Env)
+	log.Printf("RUN %v %t (%v)", run.Args, run.Shell, config.Env)
 	return nil
 }
 

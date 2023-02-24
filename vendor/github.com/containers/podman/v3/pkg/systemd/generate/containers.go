@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/containers/podman/v3/libpod"
-	libpodDefine "github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/podman/v3/pkg/domain/entities"
 	"github.com/containers/podman/v3/pkg/systemd/define"
 	"github.com/containers/podman/v3/version"
@@ -26,17 +25,11 @@ type containerInfo struct {
 	ServiceName string
 	// Name or ID of the container.
 	ContainerNameOrID string
-	// Type of the unit.
-	Type string
-	// NotifyAccess of the unit.
-	NotifyAccess string
 	// StopTimeout sets the timeout Podman waits before killing the container
 	// during service stop.
 	StopTimeout uint
 	// RestartPolicy of the systemd unit (e.g., no, on-failure, always).
 	RestartPolicy string
-	// Custom number of restart attempts.
-	StartLimitBurst string
 	// PIDFile of the service. Required for forking services. Must point to the
 	// PID of the associated conmon process.
 	PIDFile string
@@ -61,12 +54,6 @@ type containerInfo struct {
 	// CreateCommand is the full command plus arguments of the process the
 	// container has been created with.
 	CreateCommand []string
-	// containerEnv stores the container environment variables
-	containerEnv []string
-	// ExtraEnvs contains the container environment variables referenced
-	// by only the key in the container create command, e.g. --env FOO.
-	// This is only used with --new
-	ExtraEnvs []string
 	// EnvVariable is generate.EnvVariable and must not be set.
 	EnvVariable string
 	// ExecStartPre of the unit.
@@ -100,34 +87,19 @@ After={{{{- range $index, $value := .BoundToServices -}}}}{{{{if $index}}}} {{{{
 
 [Service]
 Environment={{{{.EnvVariable}}}}=%n
-{{{{- if .ExtraEnvs}}}}
-Environment={{{{- range $index, $value := .ExtraEnvs -}}}}{{{{if $index}}}} {{{{end}}}}{{{{ $value }}}}{{{{end}}}}
-{{{{- end}}}}
 Restart={{{{.RestartPolicy}}}}
-{{{{- if .StartLimitBurst}}}}
-StartLimitBurst={{{{.StartLimitBurst}}}}
-{{{{- end}}}}
 TimeoutStopSec={{{{.TimeoutStopSec}}}}
 {{{{- if .ExecStartPre}}}}
 ExecStartPre={{{{.ExecStartPre}}}}
 {{{{- end}}}}
 ExecStart={{{{.ExecStart}}}}
-{{{{- if .ExecStop}}}}
 ExecStop={{{{.ExecStop}}}}
-{{{{- end}}}}
-{{{{- if .ExecStopPost}}}}
 ExecStopPost={{{{.ExecStopPost}}}}
-{{{{- end}}}}
-{{{{- if .PIDFile}}}}
 PIDFile={{{{.PIDFile}}}}
-{{{{- end}}}}
-Type={{{{.Type}}}}
-{{{{- if .NotifyAccess}}}}
-NotifyAccess={{{{.NotifyAccess}}}}
-{{{{- end}}}}
+Type=forking
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target default.target
 `
 
 // ContainerUnit generates a systemd unit for the specified container.  Based
@@ -161,33 +133,36 @@ func generateContainerInfo(ctr *libpod.Container, options entities.GenerateSyste
 	if config.CreateCommand != nil {
 		createCommand = config.CreateCommand
 	} else if options.New {
-		return nil, errors.Errorf("cannot use --new on container %q: no create command found: only works on containers created directly with podman but not via REST API", ctr.ID())
+		return nil, errors.Errorf("cannot use --new on container %q: no create command found", ctr.ID())
 	}
 
 	nameOrID, serviceName := containerServiceName(ctr, options)
 
-	var runRoot string
-	if options.New {
-		runRoot = "%t/containers"
-	} else {
-		runRoot = ctr.Runtime().RunRoot()
-		if runRoot == "" {
-			return nil, errors.Errorf("could not lookup container's runroot: got empty string")
-		}
+	store := ctr.Runtime().GetStore()
+	if store == nil {
+		return nil, errors.Errorf("could not determine storage store for container")
 	}
 
-	envs := config.Spec.Process.Env
+	graphRoot := store.GraphRoot()
+	if graphRoot == "" {
+		return nil, errors.Errorf("could not lookup container's graphroot: got empty string")
+	}
+
+	runRoot := store.RunRoot()
+	if runRoot == "" {
+		return nil, errors.Errorf("could not lookup container's runroot: got empty string")
+	}
 
 	info := containerInfo{
 		ServiceName:       serviceName,
 		ContainerNameOrID: nameOrID,
-		RestartPolicy:     define.DefaultRestartPolicy,
+		RestartPolicy:     options.RestartPolicy,
 		PIDFile:           conmonPidFile,
 		StopTimeout:       timeout,
 		GenerateTimestamp: true,
 		CreateCommand:     createCommand,
+		GraphRoot:         graphRoot,
 		RunRoot:           runRoot,
-		containerEnv:      envs,
 	}
 
 	return &info, nil
@@ -208,11 +183,8 @@ func containerServiceName(ctr *libpod.Container, options entities.GenerateSystem
 // containerInfo.  Note that the containerInfo is also post processed and
 // completed, which allows for an easier unit testing.
 func executeContainerTemplate(info *containerInfo, options entities.GenerateSystemdOptions) (string, error) {
-	if options.RestartPolicy != nil {
-		if err := validateRestartPolicy(*options.RestartPolicy); err != nil {
-			return "", err
-		}
-		info.RestartPolicy = *options.RestartPolicy
+	if err := validateRestartPolicy(info.RestartPolicy); err != nil {
+		return "", err
 	}
 
 	// Make sure the executable is set.
@@ -225,7 +197,6 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 		info.Executable = executable
 	}
 
-	info.Type = "forking"
 	info.EnvVariable = define.EnvVariable
 	info.ExecStart = "{{{{.Executable}}}} start {{{{.ContainerNameOrID}}}}"
 	info.ExecStop = "{{{{.Executable}}}} stop {{{{if (ge .StopTimeout 0)}}}}-t {{{{.StopTimeout}}}}{{{{end}}}} {{{{.ContainerNameOrID}}}}"
@@ -239,13 +210,8 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 	// invalid `info.CreateCommand`.  Hence, we're doing a best effort unit
 	// generation and don't try aiming at completeness.
 	if options.New {
-		info.Type = "notify"
-		info.NotifyAccess = "all"
-		info.PIDFile = ""
-		info.ContainerIDFile = "%t/%n.ctr-id"
-		info.ExecStartPre = "/bin/rm -f {{{{.ContainerIDFile}}}}"
-		info.ExecStop = "{{{{.Executable}}}} stop --ignore --cidfile={{{{.ContainerIDFile}}}}"
-		info.ExecStopPost = "{{{{.Executable}}}} rm -f --ignore --cidfile={{{{.ContainerIDFile}}}}"
+		info.PIDFile = "%t/" + info.ServiceName + ".pid"
+		info.ContainerIDFile = "%t/" + info.ServiceName + ".ctr-id"
 		// The create command must at least have three arguments:
 		// 	/usr/bin/podman run $IMAGE
 		index := 0
@@ -268,9 +234,9 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 		}
 		startCommand = append(startCommand,
 			"run",
-			"--cidfile={{{{.ContainerIDFile}}}}",
+			"--conmon-pidfile", "{{{{.PIDFile}}}}",
+			"--cidfile", "{{{{.ContainerIDFile}}}}",
 			"--cgroups=no-conmon",
-			"--rm",
 		)
 		remainingCmd := info.CreateCommand[index:]
 
@@ -282,9 +248,6 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 		fs.BoolP("detach", "d", false, "")
 		fs.String("name", "", "")
 		fs.Bool("replace", false, "")
-		fs.StringArrayP("env", "e", nil, "")
-		fs.String("sdnotify", "", "")
-		fs.String("restart", "", "")
 		fs.Parse(remainingCmd)
 
 		remainingCmd = filterCommonContainerFlags(remainingCmd, fs.NArg())
@@ -304,13 +267,6 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 		hasReplaceParam, err := fs.GetBool("replace")
 		if err != nil {
 			return "", err
-		}
-
-		// Default to --sdnotify=conmon unless already set by the
-		// container.
-		hasSdnotifyParam := fs.Lookup("sdnotify").Changed
-		if !hasSdnotifyParam {
-			startCommand = append(startCommand, "--sdnotify=conmon")
 		}
 
 		if !hasDetachParam {
@@ -348,48 +304,13 @@ func executeContainerTemplate(info *containerInfo, options entities.GenerateSyst
 				remainingCmd = removeReplaceArg(remainingCmd, fs.NArg())
 			}
 		}
-
-		// Unless the user explicitly set a restart policy, check
-		// whether the container was created with a custom one and use
-		// it instead of the default.
-		if options.RestartPolicy == nil {
-			restartPolicy, err := fs.GetString("restart")
-			if err != nil {
-				return "", err
-			}
-			if restartPolicy != "" {
-				if strings.HasPrefix(restartPolicy, "on-failure:") {
-					// Special case --restart=on-failure:5
-					spl := strings.Split(restartPolicy, ":")
-					restartPolicy = spl[0]
-					info.StartLimitBurst = spl[1]
-				} else if restartPolicy == libpodDefine.RestartPolicyUnlessStopped {
-					restartPolicy = libpodDefine.RestartPolicyAlways
-				}
-				info.RestartPolicy = restartPolicy
-			}
-		}
-
-		envs, err := fs.GetStringArray("env")
-		if err != nil {
-			return "", err
-		}
-		for _, env := range envs {
-			// if env arg does not contain a equal sign we have to add the envar to the unit
-			// because it does try to red the value from the environment
-			if !strings.Contains(env, "=") {
-				for _, containerEnv := range info.containerEnv {
-					split := strings.SplitN(containerEnv, "=", 2)
-					if split[0] == env {
-						info.ExtraEnvs = append(info.ExtraEnvs, escapeSystemdArg(containerEnv))
-					}
-				}
-			}
-		}
-
 		startCommand = append(startCommand, remainingCmd...)
 		startCommand = escapeSystemdArguments(startCommand)
+
+		info.ExecStartPre = "/bin/rm -f {{{{.PIDFile}}}} {{{{.ContainerIDFile}}}}"
 		info.ExecStart = strings.Join(startCommand, " ")
+		info.ExecStop = "{{{{.Executable}}}} {{{{if .RootFlags}}}}{{{{ .RootFlags}}}} {{{{end}}}}stop --ignore --cidfile {{{{.ContainerIDFile}}}} {{{{if (ge .StopTimeout 0)}}}}-t {{{{.StopTimeout}}}}{{{{end}}}}"
+		info.ExecStopPost = "{{{{.Executable}}}} {{{{if .RootFlags}}}}{{{{ .RootFlags}}}} {{{{end}}}}rm --ignore -f --cidfile {{{{.ContainerIDFile}}}}"
 	}
 
 	info.TimeoutStopSec = minTimeoutStopSec + info.StopTimeout

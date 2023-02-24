@@ -6,10 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/common/libimage"
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/utils"
-
+	"github.com/containers/podman/v3/libpod/image"
 	"github.com/containers/podman/v3/pkg/specgen"
 	"github.com/cri-o/ocicni/pkg/ocicni"
 	"github.com/pkg/errors"
@@ -25,7 +22,7 @@ const (
 // Parse port maps to OCICNI port mappings.
 // Returns a set of OCICNI port mappings, and maps of utilized container and
 // host ports.
-func ParsePortMapping(portMappings []types.PortMapping) ([]ocicni.PortMapping, map[string]map[string]map[uint16]uint16, map[string]map[string]map[uint16]uint16, error) {
+func parsePortMapping(portMappings []specgen.PortMapping) ([]ocicni.PortMapping, map[string]map[string]map[uint16]uint16, map[string]map[string]map[uint16]uint16, error) {
 	// First, we need to validate the ports passed in the specgen, and then
 	// convert them into CNI port mappings.
 	type tempMapping struct {
@@ -221,7 +218,7 @@ func ParsePortMapping(portMappings []types.PortMapping) ([]ocicni.PortMapping, m
 				// Only get a random candidate for single entries or the start
 				// of a range. Otherwise we just increment the candidate.
 				if !tmp.isInRange || tmp.startOfRange {
-					candidate, err = utils.GetRandomPort()
+					candidate, err = getRandomPort()
 					if err != nil {
 						return nil, nil, nil, errors.Wrapf(err, "error getting candidate host port for container port %d", p.ContainerPort)
 					}
@@ -254,31 +251,50 @@ func ParsePortMapping(portMappings []types.PortMapping) ([]ocicni.PortMapping, m
 }
 
 // Make final port mappings for the container
-func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, imageData *libimage.ImageData) ([]ocicni.PortMapping, map[uint16][]string, error) {
-	finalMappings, containerPortValidate, hostPortValidate, err := ParsePortMapping(s.PortMappings)
+func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, img *image.Image) ([]ocicni.PortMapping, error) {
+	finalMappings, containerPortValidate, hostPortValidate, err := parsePortMapping(s.PortMappings)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	// No exposed ports so return the port mappings we've made so far.
-	if len(s.Expose) == 0 && imageData == nil {
-		return finalMappings, nil, nil
+	// If not publishing exposed ports, or if we are publishing and there is
+	// nothing to publish - then just return the port mappings we've made so
+	// far.
+	if !s.PublishExposedPorts || (len(s.Expose) == 0 && img == nil) {
+		return finalMappings, nil
 	}
 
 	logrus.Debugf("Adding exposed ports")
 
-	expose := make(map[uint16]string)
-	if imageData != nil {
-		expose, err = GenExposedPorts(imageData.Config.ExposedPorts)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
 	// We need to merge s.Expose into image exposed ports
+	expose := make(map[uint16]string)
 	for k, v := range s.Expose {
 		expose[k] = v
 	}
+	if img != nil {
+		inspect, err := img.InspectNoSize(ctx)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error inspecting image to get exposed ports")
+		}
+		for imgExpose := range inspect.Config.ExposedPorts {
+			// Expose format is portNumber[/protocol]
+			splitExpose := strings.SplitN(imgExpose, "/", 2)
+			num, err := strconv.Atoi(splitExpose[0])
+			if err != nil {
+				return nil, errors.Wrapf(err, "unable to convert image EXPOSE statement %q to port number", imgExpose)
+			}
+			if num > 65535 || num < 1 {
+				return nil, errors.Errorf("%d from image EXPOSE statement %q is not a valid port number", num, imgExpose)
+			}
+			// No need to validate protocol, we'll do it below.
+			if len(splitExpose) == 1 {
+				expose[uint16(num)] = "tcp"
+			} else {
+				expose[uint16(num)] = splitExpose[1]
+			}
+		}
+	}
+
 	// There's been a request to expose some ports. Let's do that.
 	// Start by figuring out what needs to be exposed.
 	// This is a map of container port number to protocols to expose.
@@ -287,11 +303,11 @@ func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, imageData
 		// Validate protocol first
 		protocols, err := checkProtocol(proto, false)
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "error validating protocols for exposed port %d", port)
+			return nil, errors.Wrapf(err, "error validating protocols for exposed port %d", port)
 		}
 
 		if port == 0 {
-			return nil, nil, errors.Errorf("cannot expose 0 as it is not a valid port number")
+			return nil, errors.Errorf("cannot expose 0 as it is not a valid port number")
 		}
 
 		// Check to see if the port is already present in existing
@@ -315,11 +331,6 @@ func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, imageData
 		}
 	}
 
-	// If not publishing exposed ports return mappings and exposed ports.
-	if !s.PublishExposedPorts {
-		return finalMappings, toExpose, nil
-	}
-
 	// We now have a final list of ports that we want exposed.
 	// Let's find empty, unallocated host ports for them.
 	for port, protocols := range toExpose {
@@ -333,9 +344,9 @@ func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, imageData
 			for hostPort == 0 && tries > 0 {
 				// We can't select a specific protocol, which is
 				// unfortunate for the UDP case.
-				candidate, err := utils.GetRandomPort()
+				candidate, err := getRandomPort()
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 
 				// Check if the host port is already bound
@@ -366,12 +377,12 @@ func createPortMappings(ctx context.Context, s *specgen.SpecGenerator, imageData
 			}
 			if tries == 0 && hostPort == 0 {
 				// We failed to find an open port.
-				return nil, nil, errors.Errorf("failed to find an open port to expose container port %d on the host", port)
+				return nil, errors.Errorf("failed to find an open port to expose container port %d on the host", port)
 			}
 		}
 	}
 
-	return finalMappings, nil, nil
+	return finalMappings, nil
 }
 
 // Check a string to ensure it is a comma-separated set of valid protocols
@@ -409,24 +420,20 @@ func checkProtocol(protocol string, allowSCTP bool) ([]string, error) {
 	return finalProto, nil
 }
 
-func GenExposedPorts(exposedPorts map[string]struct{}) (map[uint16]string, error) {
-	expose := make(map[uint16]string)
-	for imgExpose := range exposedPorts {
-		// Expose format is portNumber[/protocol]
-		splitExpose := strings.SplitN(imgExpose, "/", 2)
-		num, err := strconv.Atoi(splitExpose[0])
-		if err != nil {
-			return nil, errors.Wrapf(err, "unable to convert image EXPOSE statement %q to port number", imgExpose)
-		}
-		if num > 65535 || num < 1 {
-			return nil, errors.Errorf("%d from image EXPOSE statement %q is not a valid port number", num, imgExpose)
-		}
-		// No need to validate protocol, we'll do it below.
-		if len(splitExpose) == 1 {
-			expose[uint16(num)] = "tcp"
-		} else {
-			expose[uint16(num)] = splitExpose[1]
-		}
+// Find a random, open port on the host
+func getRandomPort() (int, error) {
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, errors.Wrapf(err, "unable to get free TCP port")
 	}
-	return expose, nil
+	defer l.Close()
+	_, randomPort, err := net.SplitHostPort(l.Addr().String())
+	if err != nil {
+		return 0, errors.Wrapf(err, "unable to determine free port")
+	}
+	rp, err := strconv.Atoi(randomPort)
+	if err != nil {
+		return 0, errors.Wrapf(err, "unable to convert random port to int")
+	}
+	return rp, nil
 }

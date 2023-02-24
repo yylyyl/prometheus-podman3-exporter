@@ -84,7 +84,7 @@ func ContainersStats() ([]ContainerStat, error) {
 	reports, err := registry.ContainerEngine().ContainerStats(
 		registry.Context(),
 		[]string{},
-		entities.ContainerStatsOptions{Stream: false, Interval: 1})
+		entities.ContainerStatsOptions{Stream: false})
 	if err != nil {
 		return stat, err
 	}

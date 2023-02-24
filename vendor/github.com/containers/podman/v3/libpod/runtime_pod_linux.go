@@ -14,14 +14,13 @@ import (
 	"github.com/containers/podman/v3/libpod/events"
 	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/specgen"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
 // NewPod makes a new, empty pod
-func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, options ...PodCreateOption) (_ *Pod, deferredErr error) {
+func (r *Runtime) NewPod(ctx context.Context, options ...PodCreateOption) (_ *Pod, deferredErr error) {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
@@ -41,6 +40,18 @@ func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, option
 		if err := option(pod); err != nil {
 			return nil, errors.Wrapf(err, "error running pod create option")
 		}
+	}
+
+	if pod.config.Name == "" {
+		name, err := r.generateName()
+		if err != nil {
+			return nil, err
+		}
+		pod.config.Name = name
+	}
+
+	if pod.config.Hostname == "" {
+		pod.config.Hostname = pod.config.Name
 	}
 
 	// Allocate a lock for the pod
@@ -64,23 +75,17 @@ func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, option
 	// Check CGroup parent sanity, and set it if it was not set
 	switch r.config.Engine.CgroupManager {
 	case config.CgroupfsCgroupsManager:
-		canUseCgroup := !rootless.IsRootless() || isRootlessCgroupSet(pod.config.CgroupParent)
-		if canUseCgroup {
-			if pod.config.CgroupParent == "" {
-				pod.config.CgroupParent = CgroupfsDefaultCgroupParent
-			} else if strings.HasSuffix(path.Base(pod.config.CgroupParent), ".slice") {
-				return nil, errors.Wrapf(define.ErrInvalidArg, "systemd slice received as cgroup parent when using cgroupfs")
-			}
-			// If we are set to use pod cgroups, set the cgroup parent that
-			// all containers in the pod will share
-			// No need to create it with cgroupfs - the first container to
-			// launch should do it for us
-			if pod.config.UsePodCgroup {
-				pod.state.CgroupPath = filepath.Join(pod.config.CgroupParent, pod.ID())
-				if p.InfraContainerSpec != nil {
-					p.InfraContainerSpec.CgroupParent = pod.state.CgroupPath
-				}
-			}
+		if pod.config.CgroupParent == "" {
+			pod.config.CgroupParent = CgroupfsDefaultCgroupParent
+		} else if strings.HasSuffix(path.Base(pod.config.CgroupParent), ".slice") {
+			return nil, errors.Wrapf(define.ErrInvalidArg, "systemd slice received as cgroup parent when using cgroupfs")
+		}
+		// If we are set to use pod cgroups, set the cgroup parent that
+		// all containers in the pod will share
+		// No need to create it with cgroupfs - the first container to
+		// launch should do it for us
+		if pod.config.UsePodCgroup {
+			pod.state.CgroupPath = filepath.Join(pod.config.CgroupParent, pod.ID())
 		}
 	case config.SystemdCgroupsManager:
 		if pod.config.CgroupParent == "" {
@@ -100,9 +105,6 @@ func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, option
 				return nil, errors.Wrapf(err, "unable to create pod cgroup for pod %s", pod.ID())
 			}
 			pod.state.CgroupPath = cgroupPath
-			if p.InfraContainerSpec != nil {
-				p.InfraContainerSpec.CgroupParent = pod.state.CgroupPath
-			}
 		}
 	default:
 		return nil, errors.Wrapf(define.ErrInvalidArg, "unsupported CGroup manager: %s - cannot validate cgroup parent", r.config.Engine.CgroupManager)
@@ -111,7 +113,6 @@ func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, option
 	if pod.config.UsePodCgroup {
 		logrus.Debugf("Got pod cgroup as %s", pod.state.CgroupPath)
 	}
-
 	if !pod.HasInfraContainer() && pod.SharesNamespaces() {
 		return nil, errors.Errorf("Pods must have an infra container to share namespaces")
 	}
@@ -119,65 +120,29 @@ func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, option
 		logrus.Infof("Pod has an infra container, but shares no namespaces")
 	}
 
-	// Unless the user has specified a name, use a randomly generated one.
-	// Note that name conflicts may occur (see #11735), so we need to loop.
-	generateName := pod.config.Name == ""
-	var addPodErr error
-	for {
-		if generateName {
-			name, err := r.generateName()
-			if err != nil {
-				return nil, err
+	if err := r.state.AddPod(pod); err != nil {
+		return nil, errors.Wrapf(err, "error adding pod to state")
+	}
+	defer func() {
+		if deferredErr != nil {
+			if err := r.removePod(ctx, pod, true, true); err != nil {
+				logrus.Errorf("Error removing pod after pause container creation failure: %v", err)
 			}
-			pod.config.Name = name
 		}
+	}()
 
-		if p.InfraContainerSpec != nil && p.InfraContainerSpec.Hostname == "" {
-			p.InfraContainerSpec.Hostname = pod.config.Name
+	if pod.HasInfraContainer() {
+		ctr, err := r.createInfraContainer(ctx, pod)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error adding Infra Container")
 		}
-		if addPodErr = r.state.AddPod(pod); addPodErr == nil {
-			return pod, nil
+		pod.state.InfraContainerID = ctr.ID()
+		if err := pod.save(); err != nil {
+			return nil, err
 		}
-		if !generateName || (errors.Cause(addPodErr) != define.ErrPodExists && errors.Cause(addPodErr) != define.ErrCtrExists) {
-			break
-		}
-	}
-	if addPodErr != nil {
-		return nil, errors.Wrapf(addPodErr, "error adding pod to state")
-	}
-
-	return pod, nil
-}
-
-// AddInfra adds the created infra container to the pod state
-func (r *Runtime) AddInfra(ctx context.Context, pod *Pod, infraCtr *Container) (*Pod, error) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	if !r.valid {
-		return nil, define.ErrRuntimeStopped
-	}
-	pod.state.InfraContainerID = infraCtr.ID()
-	if err := pod.save(); err != nil {
-		return nil, err
 	}
 	pod.newPodEvent(events.Create)
 	return pod, nil
-}
-
-// SavePod is a helper function to save the pod state from outside of libpod
-func (r *Runtime) SavePod(pod *Pod) error {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	if !r.valid {
-		return define.ErrRuntimeStopped
-	}
-	if err := pod.save(); err != nil {
-		return err
-	}
-	pod.newPodEvent(events.Create)
-	return nil
 }
 
 func (r *Runtime) removePod(ctx context.Context, p *Pod, removeCtrs, force bool) error {
@@ -189,9 +154,10 @@ func (r *Runtime) removePod(ctx context.Context, p *Pod, removeCtrs, force bool)
 	if err != nil {
 		return err
 	}
+
 	numCtrs := len(ctrs)
 
-	// If the only running container in the pod is the pause container, remove the pod and container unconditionally.
+	// If the only container in the pod is the pause container, remove the pod and container unconditionally.
 	pauseCtrID := p.state.InfraContainerID
 	if numCtrs == 1 && ctrs[0].ID() == pauseCtrID {
 		removeCtrs = true
@@ -273,15 +239,6 @@ func (r *Runtime) removePod(ctx context.Context, p *Pod, removeCtrs, force bool)
 				logrus.Errorf("Error removing container %s from pod %s: %v", ctr.ID(), p.ID(), err)
 			}
 		}
-	}
-
-	// Clear infra container ID before we remove the infra container.
-	// There is a potential issue if we don't do that, and removal is
-	// interrupted between RemoveAllContainers() below and the pod's removal
-	// later - we end up with a reference to a nonexistent infra container.
-	p.state.InfraContainerID = ""
-	if err := p.save(); err != nil {
-		return err
 	}
 
 	// Remove all containers in the pod from the state.
