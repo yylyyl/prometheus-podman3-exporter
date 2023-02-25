@@ -16,8 +16,8 @@ XS-Go-Import-Path: github.com/yylyyl/prometheus-podman3-exporter
 
 Package: prometheus-podman3-exporter
 Architecture: any
-Depends: podman (<< 4),
-         podman (>= 3.2),
+Depends: podman (<< 3.2),
+         podman (>= 3),
          ${shlibs:Depends},
          ${misc:Depends}
 Description: Prometheus exporter for podman v3
