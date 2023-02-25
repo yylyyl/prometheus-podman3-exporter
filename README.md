@@ -31,10 +31,10 @@ The code interacting with the network part of podman is slightly altered, and **
 As compatibility problems would occur, the version of podman in your environment and the version of client library should match.
 
 Thus, if you want to connect to podman locally (in ABI mode),
-switch to `api-3.0.0` branch for podman 3.0.x or 3.1.x, or switch to `main` branch for podman 3.2.x or above.
+switch to `legacy` branch for podman 3.0.x or 3.1.x, or switch to `main` branch for podman 3.2.x or above.
 
 If you want to connect to podman remotely (in tunnel mode, mostly because you want to run this project in podman, including using `unix socket` or `tcp`),
-it seems safe to use a client library of lower version. Switch to `api-3.0.0` branch.
+it seems safe to use a client library of lower version. Switch to `legacy` branch.
 
 
 ## Usage and Options
