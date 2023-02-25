@@ -45,22 +45,24 @@ Voilà! Find the binary at ``./bin/prometheus-podman3-exporter``.
 
 ## Container Image
 
-It seems safe to use a lower version of client library to connect to podman in `tunnel mode`, so an image built with lower version is provided.
-
-The socket file of podman is recreated from time to time, so we should mount the parent directory of the socket file into the container.
+It seems safe to use a lower version of client library to connect to podman remotely (in tunnel mode), so an image built with lower version is provided.
 
 * Using unix socket (rootless):
 
+Remember to **enable linger in loginctl**, otherwise your socket will disappear after you log out!
+
  ```shell
+# loginctl enable-linger <username>
+ 
 systemctl start --user podman.socket
-podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v $XDG_RUNTIME_DIR/podman:/run/podman --userns=keep-id --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
+podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v $XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock --userns=keep-id --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
  ```
 
 * Using unix socket (root):
 
  ```shell
 systemctl start podman.socket
-podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v /run/podman:/run/podman --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
+podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v /run/podman/podman.sock:/run/podman/podman.sock --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
  ```
 
 * Using TCP:
