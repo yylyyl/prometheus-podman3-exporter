@@ -6,9 +6,9 @@ Maybe you want to use official [prometheus-podman-exporter](https://github.com/c
 which supports podman v4.x only. However, many linux distributions come with podman v3.x now (February 2023).
 For example:
 
-- Debian 11 (bullseye): (3.0.1)[https://packages.debian.org/bullseye/podman]
-- Ubuntu 22.10 (kinetic): (3.4.4)[https://packages.ubuntu.com/kinetic/podman]
-- Ubuntu 22.04 LTS (jammy): (3.4.4)[https://packages.ubuntu.com/jammy/podman]
+- Debian 11 (bullseye): [3.0.1](https://packages.debian.org/bullseye/podman)
+- Ubuntu 22.10 (kinetic): [3.4.4](https://packages.ubuntu.com/kinetic/podman)
+- Ubuntu 22.04 LTS (jammy): [3.4.4](https://packages.ubuntu.com/jammy/podman)
 
 That's why the official exporter is forked.
 
@@ -39,7 +39,7 @@ it seems safe to use a client library of lower version. Switch to `api-3.0.0` br
 
 ## Usage and Options
 
-```shell
+```
 Usage:
   prometheus-podman3-exporter [flags]
 
@@ -74,14 +74,14 @@ $ ./bin/prometheus-podman3-exporter --collector.enable-all
 ## Collectors
 The table below list all existing collector and their description.
 
-| Name      | Description |
-| --------- | ----------- |
-| container | exposes containers information
-| image     | exposes images information
-| network   | exposes networks information
-| pod       | exposes pod information
-| volume    | exposes volume information
-| system    | exposes system (host) information
+| Name      | Description                       |
+|-----------|-----------------------------------|
+| container | exposes containers information    |
+| image     | exposes images information        |
+| network   | exposes networks information      |
+| pod       | exposes pod information           |
+| volume    | exposes volume information        |
+| system    | exposes system (host) information |
 
 ### Collectors examples output
 
