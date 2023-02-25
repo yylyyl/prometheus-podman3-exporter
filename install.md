@@ -47,24 +47,26 @@ Voilà! Find the binary at ``./bin/prometheus-podman3-exporter``.
 
 It seems safe to use a lower version of client library to connect to podman in `tunnel mode`, so an image built with lower version is provided.
 
+The socket file of podman is recreated from time to time, so we should mount the parent directory of the socket file into the container.
+
 * Using unix socket (rootless):
 
  ```shell
 systemctl start --user podman.socket
-podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v $XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock --userns=keep-id --security-opt label=disable -p 9882:9882 docker.io/yylyyl/prometheus-podman3-exporter
+podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v $XDG_RUNTIME_DIR/podman:/run/podman --userns=keep-id --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
  ```
 
 * Using unix socket (root):
 
  ```shell
 systemctl start podman.socket
-podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v /run/podman/podman.sock:/run/podman/podman.sock --security-opt label=disable -p 9882:9882 docker.io/yylyyl/prometheus-podman3-exporter
+podman run -e CONTAINER_HOST=unix:///run/podman/podman.sock -v /run/podman:/run/podman --security-opt label=disable -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
  ```
 
 * Using TCP:
 
  ```shell
 podman system service --time=0 tcp://<ip>:<port>
-podman run -e CONTAINER_HOST=tcp://<ip>:<port> --network=host -p 9882:9882 docker.io/yylyyl/prometheus-podman3-exporter
+podman run -e CONTAINER_HOST=tcp://<ip>:<port> --network=host -p 9882:9882 ghcr.io/yylyyl/prometheus-podman3-exporter:latest
  ```
 
