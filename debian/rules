@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+# See debhelper(7) (uncomment to enable)
+# output every command that modifies files on the build system.
+#export DH_VERBOSE = 1
+
+BUILDDIR := $(CURDIR)/build
+
+BRANCH     := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+BUILDTAGS  :=
+BUILDFLAGS  = -tags "$(BUILDTAGS)" -ldflags \
+  " -X $(DH_GOPKG)/cmd.buildVersion=$(DEB_VERSION_UPSTREAM)\
+    -X $(DH_GOPKG)/cmd.buildRevision=$(DEB_VERSION)\
+    -X $(DH_GOPKG)/cmd.buildBranch=$(BRANCH)"
+
+%:
+	dh $@ --buildsystem=golang \
+	    --builddirectory=$(BUILDDIR)
+
+override_dh_auto_build:
+	dh_auto_build -- $(BUILDFLAGS)
+
+override_dh_auto_test:
+override_dh_auto_install:

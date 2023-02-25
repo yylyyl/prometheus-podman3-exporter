@@ -2,7 +2,8 @@
 Description=Prometheus exporter for podman (v3) machine
 [Service]
 Restart=on-failure
-ExecStart=/usr/bin/prometheus-podman3-exporter --collector.enable-all
+EnvironmentFile=/etc/default/prometheus-podman3-exporter
+ExecStart=/usr/bin/prometheus-podman3-exporter $ARGS
 ExecReload=/bin/kill -HUP $MAINPID
 TimeoutStopSec=20s
 SendSIGKILL=no

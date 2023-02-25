@@ -1,0 +1,25 @@
+Source: prometheus-podman3-exporter
+Section: net
+Priority: optional
+Maintainer: Peter Yang <yangyiliang@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-golang (>= 1.17~),
+               libgpgme-dev,
+               libbtrfs-dev,
+               libdevmapper-dev,
+               libassuan-dev,
+               pkg-config
+Standards-Version: 4.5.1
+Homepage: https://github.com/yylyyl/prometheus-podman3-exporter
+Rules-Requires-Root: no
+XS-Go-Import-Path: github.com/yylyyl/prometheus-podman3-exporter
+
+Package: prometheus-podman3-exporter
+Architecture: any
+Depends: podman (<< 4),
+         podman (>= 3.2),
+         ${shlibs:Depends},
+         ${misc:Depends}
+Description: Prometheus exporter for podman v3
+ The original peometheus-podman-exporter is only compatible with podman v4, and
+ this one is compatible with podman v3.
