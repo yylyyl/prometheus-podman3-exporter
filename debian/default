@@ -1,0 +1,8 @@
+# Settings for prometheus-podman3-exporter
+
+# How to connect to podman. Leave empty to connect to podman locally.
+# Or specify a remote address, e.g. "unix:///run/podman/podman.socket" or "tcp://<ip>:<port>"
+CONTAINER_HOST=""
+
+# Arguments to pass to the exporter. Run "prometheus-podman3-exporter -h" to get details.
+ARGS="--collector.enable-all"

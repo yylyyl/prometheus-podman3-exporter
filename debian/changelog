@@ -1,0 +1,53 @@
+prometheus-podman3-exporter (1.3.0-1) unstable; urgency=medium
+
+  * Debianize the package
+  * Remove unnecessary files
+  * Rename package
+  * Support podman v3
+
+ -- Peter Yang <yangyiliang@gmail.com>  Fri, 24 Feb 2023 23:25:24 -0500
+
+prometheus-podman-exporter (1.2.0-1) UNRELEASED; urgency=low
+
+  * Convert pod/container/image labels on prometheus metrics
+  * Github workflow - build container image
+  * Makefile update - add vendor check target
+  * Vagrant box update to fc37
+  * Do not init podman registry if --version flag is enabled
+  * Running codespell
+  * Fix trivial golangci-lint issues
+  * Fix golangci failure in cirrus
+  * Fix export crash when pod is created without infra container
+  * Bump github.com/containers/podman/v4 from 4.3.0 to 4.3.1
+  * Bump containers/podman (v4.3.0), common (v0.51.1) and image/v5 (v5.23.0)
+  * Bump github.com/prometheus/client_golang from 1.13.1 to 1.14.0
+  * Bump github.com/prometheus/client_golang from 1.13.0 to 1.13.1
+  * Bump prometheus/exporter-toolkit from 0.7.1 to 0.8.1
+  * Bump github.com/spf13/cobra from 1.6.0 to 1.6.1
+  * Bump github.com/spf13/cobra from 1.5.0 to 1.6.0
+
+ -- Navid Yaghoobi <navidys@fedoraproject.org> Sun Nov 20 2022
+
+prometheus-podman-exporter (1.1.0-1) UNRELEASED; urgency=low
+
+  * Fix image metrics gathering error (collected before)
+  * Added container exit code to list of exported metrics
+  * Image repo and name parse issue fix
+  * Added container started and exited time metrics
+  * Docs (install.md) update - exporter container and unix socket file
+  * Fix build and vendoring issue
+  * Bump github.com/containers/podman/v4 from 4.2.0 to 4.2.1
+  * Bump github.com/containers/podman/v4 from 4.1.1 to 4.2.0
+  * Bump github.com/prometheus/client_golang from 1.12.2 to 1.13.0
+  * Bump github.com/containers/common from 0.48.0 to 0.49.0
+  * Bump github.com/sirupsen/logrus from 1.8.1 to 1.9.0
+  * Bump github.com/prometheus/common from 0.36.0 to 0.37.0
+  * Bump github.com/prometheus/common from 0.35.0 to 0.36.0
+
+  -- Navid Yaghoobi <navidys@fedoraproject.org> Sun Sep 11 2022
+
+prometheus-podman-exporter (1.0.0-1) UNRELEASED; urgency=low
+
+  * initial release
+
+  -- Navid Yaghoobi <navidys@fedoraproject.org> Sun Jul 03 2022
