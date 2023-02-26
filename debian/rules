@@ -7,12 +7,13 @@ include /usr/share/dpkg/pkg-info.mk
 
 DH_GOPKG = github.com/yylyyl/prometheus-podman3-exporter
 BUILDDIR := $(CURDIR)/build
+REVISION := $(shell echo '$(DEB_VERSION)' | sed -E 's/^([^-]+-)+//')
 
 BRANCH     := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
 BUILDTAGS  :=
 BUILDFLAGS  = -tags "$(BUILDTAGS)" -ldflags \
   " -X $(DH_GOPKG)/cmd.buildVersion=$(DEB_VERSION_UPSTREAM)\
-    -X $(DH_GOPKG)/cmd.buildRevision=$(DEB_VERSION)\
+    -X $(DH_GOPKG)/cmd.buildRevision=$(REVISION)\
     -X $(DH_GOPKG)/cmd.buildBranch=$(BRANCH)"
 
 %:
