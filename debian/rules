@@ -5,6 +5,7 @@ include /usr/share/dpkg/pkg-info.mk
 # output every command that modifies files on the build system.
 #export DH_VERBOSE = 1
 
+DH_GOPKG = github.com/yylyyl/prometheus-podman3-exporter
 BUILDDIR := $(CURDIR)/build
 
 BRANCH     := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
