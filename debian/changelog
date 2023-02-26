@@ -1,4 +1,4 @@
-prometheus-podman3-exporter (1.3.0-1) unstable; urgency=medium
+prometheus-podman3-exporter (1.2.0-1~bpo+1) unstable; urgency=medium
 
   * Debianize the package
   * Remove unnecessary files
